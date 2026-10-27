@@ -227,15 +227,16 @@ def test_smarterase_fills_with_edge_mean():
 # ---------- v0.1.3 二轮审查 P1 回归 ----------
 
 def test_line_primitive_alive():
-    """P1-A 回归：line 曾被 dispatch 重构漏出 xyxy 组=原语全灭。"""
-    bg = b"\x30\x60\x90"
+    """P1-A 回归：line 曾被 dispatch 重构漏出 xyxy 组=原语全灭。
+    底色判定用 RGBA 序 b'\\x90\\x60\\x30'（BGRA 串曾判错→全图恒计数）。"""
+    bg = b"\x90\x60\x30"
     png = _img(200, 100)
     out = annotate.annotate_png(png, [{"kind": "line", "x1": 5, "y1": 5,
                                        "x2": 100, "y2": 50, "width": 1}])
     _, _, px = annotate._decode_png(out)
     drawn = sum(1 for i in range(0, len(px), 4)
                 if px[i:i + 3] != bg)
-    assert drawn > 50, "line 没画出笔画（原语死亡）"
+    assert 50 < drawn < 1000, "line 笔画异常（%d 像素）" % drawn
 
 
 def test_text_has_no_disc_background():
@@ -420,3 +421,71 @@ def test_mcp_tool_schemas():
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out"}
+
+
+# ---------- v0.1.6 渐变实心箭头 + 圆角矩形 ----------
+
+def _ink(png):
+    """非底色像素计数。底色 BGRA(0x30,0x60,0x90) 经编码器翻转入 RGBA
+    = b'\\x90\\x60\\x30'——判错色序会全图恒计数（实锤过一次）。"""
+    bg = b"\x90\x60\x30"
+    _, _, px = annotate._decode_png(png)
+    return sum(1 for i in range(0, len(px), 4) if px[i:i + 3] != bg)
+
+
+def test_fat_arrow_default_and_bigger_than_line():
+    """arrow 缺省=渐变实心箭头：墨量显著大于 style=line 回退（同 width）。"""
+    png = _img(300, 120)
+    fat = annotate.annotate_png(png, [{"kind": "arrow", "x1": 20, "y1": 60,
+                                       "x2": 260, "y2": 60, "width": 6}])
+    thin = annotate.annotate_png(png, [{"kind": "arrow", "x1": 20, "y1": 60,
+                                        "x2": 260, "y2": 60, "width": 6,
+                                        "style": "line"}])
+    assert _ink(fat) > _ink(thin) * 2, \
+        "缺省箭头墨量 %d 未显著超过细杆 %d" % (_ink(fat), _ink(thin))
+
+
+def test_fat_arrow_solid_head_tip():
+    """三角头尖端 (x2,y2) 附近必须实心（渐变箭头的头是实心三角）。
+    窗口宽按几何算：距 tip d 处三角全宽 ≈ 1.44d。"""
+    png = _img(300, 120)
+    out = annotate.annotate_png(png, [{"kind": "arrow", "x1": 20, "y1": 60,
+                                       "x2": 260, "y2": 60, "width": 6,
+                                       "color": "#FF0000"}])
+    _, _, px = annotate._decode_png(out)
+    red = 0
+    for dy in range(-4, 5):
+        for dx in range(-5, 1):
+            i = ((60 + dy) * 300 + (260 + dx)) * 4
+            if px[i] > 0xC0 and px[i + 1] < 0x40:
+                red += 1
+    assert red >= 18, "头尖端不实心（%d 红像素）" % red
+
+
+def test_rounded_rect_corners_open():
+    """radius>0：四角留空（无笔画）、边中段有笔画。"""
+    png = _img(200, 120)
+    out = annotate.annotate_png(png, [{"kind": "rect", "x": 20, "y": 20,
+                                       "w": 160, "h": 80, "width": 3,
+                                       "radius": 14}])
+    _, _, px = annotate._decode_png(out)
+    bg = (0x90, 0x60, 0x30)
+
+    def at(x, y):
+        i = (y * 200 + x) * 4
+        return (px[i], px[i + 1], px[i + 2])
+
+    corners = [(20, 20), (179, 20), (20, 99), (179, 99)]
+    assert all(at(*c) == bg for c in corners), "圆角矩形角点未留空"
+    assert at(100, 20) != bg and at(20, 60) != bg, "边中段笔画缺失"
+
+
+def test_rounded_rect_zero_radius_is_plain():
+    """radius 缺省 0 = 原直角行为不变（向后兼容）。"""
+    png = _img(200, 120)
+    out = annotate.annotate_png(png, [{"kind": "rect", "x": 20, "y": 20,
+                                       "w": 160, "h": 80, "width": 3}])
+    _, _, px = annotate._decode_png(out)
+    i = (20 * 200 + 20) * 4
+    assert (px[i], px[i + 1], px[i + 2]) != (0x90, 0x60, 0x30), \
+        "radius=0 直角矩形角点竟无笔画"

@@ -29,9 +29,14 @@
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
   **rect/ellipse/arrow/line/text（ASCII）/mosaic/blur/step（自动递增编号）/
   number（显式编号 value）/spotlight（聚光灯 dim）/smarterase（智能擦除）**，
-  坐标亦收 "x,y,w,h" 串（coords/area 键）。例：
-  `annotate shot.png '[{"kind":"rect","x":10,"y":10,"w":200,"h":50},
-  {"kind":"arrow","x1":300,"y1":50,"x2":200,"y2":30}]'`
+  坐标亦收 "x,y,w,h" 串（coords/area 键）。**每个 op 独立**
+  `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=渐变实心箭头
+  （尾细头胖+三角头，微信截图风格；`"style":"line"` 回退旧直杆）；
+  `rect` 可选 `radius`（圆角描边）。例：
+  `annotate shot.png '[{"kind":"rect","x":10,"y":10,"w":200,"h":50,
+  "width":8,"color":"#07C160","radius":12},
+  {"kind":"arrow","x1":300,"y1":50,"x2":200,"y2":30,"width":10,
+  "color":"#FF3B30"}]'`
 - `screens`——列出显示器。
 
 ## MCP（ashot 域名，宿主注册后可用）

@@ -5,9 +5,11 @@
 zlib/struct 手写 PNG（与 output 同款编码器思路），不依赖 PIL。
 
 原语（ops JSON 数组的 kind）——形状七件：
-  rect  x,y,w,h [color] [width]      矩形框
+  rect  x,y,w,h [color] [width] [radius]  矩形框（radius>0 圆角描边）
   ellipse x,y,w,h [color] [width]    椭圆框
-  arrow  x1,y1,x2,y2 [color] [width] 箭头
+  arrow  x1,y1,x2,y2 [color] [width] [style]  箭头——v0.1.6 缺省渐变实心
+                                     （尾细头胖+三角头，微信截图风格，
+                                     用户裁决）；style="line" 回退旧直杆
   line   x1,y1,x2,y2 [color] [width] 直线
   text   x,y:内容 [color] [size]     文字（内置 8x16 点阵，仅 ASCII 稳定；
                                      中文留 B 交互窗形态，此处诚实降级为框）
@@ -28,6 +30,7 @@ B 交互形态（tkinter 全屏遮罩画布）v0.2 预留：接口 annotate_inte
 已占位，首版不实现——用户画笔交互属增量交付。
 """
 import json
+import math
 import struct
 import zlib
 
@@ -71,11 +74,35 @@ class Canvas:
                 err += dx
                 y1 += sy
 
-    def rect(self, x, y, w, h, color, width=DEFAULT_WIDTH):
+    def rect(self, x, y, w, h, color, width=DEFAULT_WIDTH, radius=0):
+        if radius > 0:
+            self._rect_round(x, y, w, h, color, width, radius)
+            return
         self.line(x, y, x + w, y, color, width)
         self.line(x + w, y, x + w, y + h, color, width)
         self.line(x + w, y + h, x, y + h, color, width)
         self.line(x, y + h, x, y, color, width)
+
+    def _rect_round(self, x, y, w, h, color, width, radius):
+        """圆角矩形描边：四直段 + 四 90° 圆弧（参数方程步进连线）。"""
+        r = max(0, min(radius, w // 2, h // 2))
+        self.line(x + r, y, x + w - r, y, color, width)
+        self.line(x + r, y + h, x + w - r, y + h, color, width)
+        self.line(x, y + r, x, y + h - r, color, width)
+        self.line(x + w, y + r, x + w, y + h - r, color, width)
+        arcs = ((x + r, y + r, 3.14159265, 4.71238898),
+                (x + w - r, y + r, 4.71238898, 6.2831853),
+                (x + w - r, y + h - r, 0.0, 1.57079633),
+                (x + r, y + h - r, 1.57079633, 3.14159265))
+        for cx, cy, a0, a1 in arcs:
+            steps = max(8, r)
+            prev = None
+            for i in range(steps + 1):
+                t = a0 + (a1 - a0) * i / steps
+                px, py = int(cx + r * math.cos(t)), int(cy + r * math.sin(t))
+                if prev:
+                    self.line(prev[0], prev[1], px, py, color, width)
+                prev = (px, py)
 
     def ellipse(self, x, y, w, h, color, width=DEFAULT_WIDTH):
         """参数方程椭圆（步进连线 + 笔刷）。"""
@@ -93,14 +120,75 @@ class Canvas:
                 self.line(prev[0], prev[1], px, py, color, width)
             prev = (px, py)
 
-    def arrow(self, x1, y1, x2, y2, color, width=DEFAULT_WIDTH):
-        import math
+    def arrow(self, x1, y1, x2, y2, color, width=DEFAULT_WIDTH, style="fat"):
+        """渐变实心箭头（v0.1.6 缺省）：尾细头胖圆盘扫掠 + 实心三角头
+        （微信截图风格，用户裁决「效果最好」）。style="line" 回退旧式
+        恒粗直杆细箭头。"""
+        if style == "line":
+            self._arrow_line(x1, y1, x2, y2, color, width)
+            return
+        dx, dy = x2 - x1, y2 - y1
+        dist = math.hypot(dx, dy)
+        if dist < 1:
+            return
+        ux, uy = dx / dist, dy / dist
+        head_len = max(12.0, width * 5.0)     # 三角头长度（随 width 缩放）
+        head_half = head_len * 0.72           # 三角头半底宽
+        r_tail = max(1.8, width * 0.6)        # 尾部半径（自然圆尾）
+        r_head = head_half * 0.55             # 杆末端最胖半径，接三角底
+        shaft_len = max(0.0, dist - head_len)
+        steps = max(8, int(shaft_len * 2))
+        for i in range(steps + 1):
+            s = shaft_len * i / steps
+            # 幂 0.6 快速增粗：线性渐变尾巴太细（针状），微信观感是尾就饱满
+            t = (s / shaft_len) ** 0.6 if shaft_len > 0 else 1.0
+            r = r_tail + (r_head - r_tail) * t
+            self._disc(x1 + ux * s, y1 + uy * s, r, color)
+        bx, by = x2 - ux * head_len, y2 - uy * head_len   # 三角底边中点
+        nx, ny = -uy, ux
+        self._fill_tri((x2, y2),
+                       (bx + nx * head_half, by + ny * head_half),
+                       (bx - nx * head_half, by - ny * head_half), color)
+
+    def _arrow_line(self, x1, y1, x2, y2, color, width):
+        """旧式箭头：恒粗直杆 + 两条翼（style="line" 回退用）。"""
         self.line(x1, y1, x2, y2, color, width)
         ang = math.atan2(y2 - y1, x2 - x1)
         ln = max(12, width * 4)
         for da in (2.6, -2.6):
             self.line(x2, y2, int(x2 + ln * math.cos(ang + da)),
                       int(y2 + ln * math.sin(ang + da)), color, width)
+
+    def _disc(self, cx, cy, r, color):
+        """亚像素圆盘扫掠单元：r 可为小数（<0.5 收缩为单点）。"""
+        ri = int(r + 0.5)
+        if ri <= 0:
+            self._px(int(cx), int(cy), color)
+            return
+        r2 = ri * ri
+        for yy in range(int(cy - ri), int(cy + ri) + 1):
+            for xx in range(int(cx - ri), int(cx + ri) + 1):
+                if (xx - cx) ** 2 + (yy - cy) ** 2 <= r2:
+                    self._px(xx, yy, color)
+
+    def _fill_tri(self, p1, p2, p3, color):
+        """实心三角（同侧法内点判定，包围盒扫描）。"""
+
+        def sign(ax, ay, bx, by, cx, cy):
+            return (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
+
+        minx = max(0, int(min(p1[0], p2[0], p3[0])))
+        maxx = min(self.w - 1, int(max(p1[0], p2[0], p3[0])) + 1)
+        miny = max(0, int(min(p1[1], p2[1], p3[1])))
+        maxy = min(self.h - 1, int(max(p1[1], p2[1], p3[1])) + 1)
+        for yy in range(miny, maxy + 1):
+            for xx in range(minx, maxx + 1):
+                d1 = sign(xx, yy, p1[0], p1[1], p2[0], p2[1])
+                d2 = sign(xx, yy, p2[0], p2[1], p3[0], p3[1])
+                d3 = sign(xx, yy, p3[0], p3[1], p1[0], p1[1])
+                if not ((d1 < 0 or d2 < 0 or d3 < 0)
+                        and (d1 > 0 or d2 > 0 or d3 > 0)):
+                    self._px(xx, yy, color)
 
     def circle_filled(self, cx, cy, r, color):
         """实心圆（step/number 徽章底）。"""
@@ -340,11 +428,11 @@ def annotate_png(png_bytes, ops):
                   else None)
 
         if kind == "rect":
-            cv.rect(*n, color, width)
+            cv.rect(*n, color, width, radius=int(op.get("radius", 0)))
         elif kind == "ellipse":
             cv.ellipse(*n, color, width)
         elif kind == "arrow":
-            cv.arrow(*n, color, width)
+            cv.arrow(*n, color, width, style=str(op.get("style", "fat")))
         elif kind == "line":
             cv.line(*n, color, width)
         elif kind == "mosaic":
