@@ -27,16 +27,22 @@
   `~\Ashot\shots\shot_时间戳.png`）；`--clip` 只进剪贴板；`--open` 截完即看；
   `--retention-days N`（缺省 30，运行顺手清过期旧图）；`--keep` 跳过清理。
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
-  **rect/ellipse/arrow/line/text（ASCII）/mosaic/blur/step（自动递增编号）/
-  number（显式编号 value）/spotlight（聚光灯 dim）/smarterase（智能擦除）**，
-  坐标亦收 "x,y,w,h" 串（coords/area 键）。**每个 op 独立**
-  `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=渐变实心箭头
-  （尾细头胖+三角头，微信截图风格；`"style":"line"` 回退旧直杆）；
-  `rect` 可选 `radius`（圆角描边）。例：
+  **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注）/mosaic/blur/
+  step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
+  smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
+  **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
+  渐变实心箭头（尾细头胖+三角头，微信截图风格；`"style":"line"` 回退
+  旧直杆）；`rect` 可选 `radius`（圆角描边）。
+  **渲染双后端（v0.1.7）**：矢量形状走 GDI+（System.Drawing 抗锯齿，
+  真矢量——边缘平滑无马赛克感，文字走微软雅黑）；GDI+ 失败自动降级
+  纯像素画布（硬边）。收据 `backend` 字段如实标注 gdi+/pixel。
+  例：
   `annotate shot.png '[{"kind":"rect","x":10,"y":10,"w":200,"h":50,
   "width":8,"color":"#07C160","radius":12},
   {"kind":"arrow","x1":300,"y1":50,"x2":200,"y2":30,"width":10,
-  "color":"#FF3B30"}]'`
+  "color":"#FF3B30"},
+  {"kind":"text","x":20,"y":80,"text":"这里有问题","size":28,
+  "color":"#FFFFFF"}]'`
 - `screens`——列出显示器。
 
 ## MCP（ashot 域名，宿主注册后可用）

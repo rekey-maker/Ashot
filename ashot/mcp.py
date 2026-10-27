@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, capture, output  # noqa: E402
+from ashot import __version__, annotate, annotate_gdi, capture, output  # noqa: E402
 
 TOOLS = {}
 
@@ -65,20 +65,22 @@ def _screens():
 
 def _annotate(image, ops, out=None):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
-    text(ASCII)/mosaic/blur/step(自动递增编号)/number(显式编号 value)/
-    spotlight(聚光灯 dim)/smarterase(智能擦除)。返回标注后 PNG 绝对路径。
-    out 缺省写 <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1 根修，
-    与 CLI 缺省行为对齐）。"""
+    text(中文可标注，GDI+ 系统字体)/mosaic/blur/step(自动递增编号)/
+    number(显式编号 value)/spotlight(聚光灯 dim)/smarterase(智能擦除)。
+    矢量抗锯齿渲染（GDI+），失败自动降级纯像素画布——收据 backend 字段
+    如实标注（gdi+/pixel）。返回标注后 PNG 绝对路径；out 缺省写
+    <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1 根修，与 CLI 对齐）。"""
     with open(str(image), "rb") as fh:
         png = fh.read()
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
-    out_bytes = annotate.annotate_png(png, ops_list or [])
+    out_bytes, backend = annotate_gdi.annotate_png_vector(png, ops_list or [])
     stem = str(image)
     default_out = (stem.rsplit(".", 1)[0] + "_annotated.png"
                    if "." in os.path.basename(stem)
                    else stem + "_annotated.png")
     path = output.save(out_bytes, out=out or default_out)
-    return json.dumps({"ok": True, "path": path}, ensure_ascii=False)
+    return json.dumps({"ok": True, "path": path, "backend": backend},
+                      ensure_ascii=False)
 
 
 def _tool_named(name, fn):

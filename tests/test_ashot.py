@@ -489,3 +489,83 @@ def test_rounded_rect_zero_radius_is_plain():
     i = (20 * 200 + 20) * 4
     assert (px[i], px[i + 1], px[i + 2]) != (0x90, 0x60, 0x30), \
         "radius=0 直角矩形角点竟无笔画"
+
+
+# ---------- v0.1.7 矢量标注（GDI+ 抗锯齿） ----------
+
+def test_vector_compile_fat_arrow_poly_closed():
+    """几何编译：fat arrow 多边形闭合且点数充足；未知 kind/坏 hex 抛错。"""
+    from ashot import vector
+    poly = vector._fat_arrow_poly(20, 60, 260, 60, 6)
+    assert len(poly) > 60, "多边形点数过少：%d" % len(poly)
+    assert poly[0] != poly[-1]   # 首尾由圆尾弧衔接，非重复点
+    try:
+        vector.compile_ops([{"kind": "nuke"}])
+        raise AssertionError("未知 kind 未抛错")
+    except ValueError:
+        pass
+    try:
+        vector.compile_ops([{"kind": "rect", "x": 0, "y": 0, "w": 4, "h": 4,
+                             "color": "#ZZZZZZ"}])
+        raise AssertionError("坏 hex 未抛错")
+    except ValueError:
+        pass
+
+
+def test_vector_compile_pixel_ops_separated():
+    """像素操作与矢量形状分流：mosaic/blur/spotlight/smarterase 不进 shapes。"""
+    from ashot import vector
+    spec = vector.compile_ops([
+        {"kind": "rect", "x": 0, "y": 0, "w": 4, "h": 4},
+        {"kind": "mosaic", "x": 0, "y": 0, "w": 4, "h": 4},
+        {"kind": "smarterase", "x": 0, "y": 0, "w": 4, "h": 4},
+    ])
+    assert len(spec["shapes"]) == 1 and len(spec["pixel_ops"]) == 2
+
+
+def test_gdi_vector_backend_and_antialiasing():
+    """端到端：GDI+ 矢量路 backend=gdi+，笔画边缘存在抗锯齿中间色
+    （纯像素画布是硬边——中间色像素数为 0，这是两种后端的分水岭）。"""
+    from ashot import annotate_gdi
+    out, backend = annotate_gdi.annotate_png_vector(
+        _img(300, 120),
+        [{"kind": "rect", "x": 50, "y": 30, "w": 200, "h": 60,
+          "width": 6, "color": "#FF0000"}])
+    assert backend == "gdi+", backend
+    _, _, px = annotate._decode_png(out)
+    mid = sum(1 for i in range(0, len(px), 4)
+              if 0 < abs(px[i] - 0x90) < 0xC0
+              and px[i + 1] < 0x90)   # 红与底色(0x90,0x60,0x30)的混合过渡
+    assert mid > 20, "描边边缘无抗锯齿中间色（%d）——像硬边像素版" % mid
+
+
+def test_gdi_vector_mixed_ops_backend_pixel():
+    """混合 ops（矢量形状+像素操作）：整体走像素叠加路，backend=pixel，
+    且像素操作真实生效（spotlight：区内保持原色、区外压暗）。"""
+    from ashot import annotate_gdi
+    out, backend = annotate_gdi.annotate_png_vector(
+        _img(300, 120),
+        [{"kind": "rect", "x": 10, "y": 10, "w": 50, "h": 50, "width": 3},
+         {"kind": "spotlight", "x": 100, "y": 20, "w": 60, "h": 60,
+          "dim": 0.5}])
+    assert backend == "pixel", backend
+    inside = _px_at(out, 130, 50)
+    outside = _px_at(out, 250, 50)
+    assert inside == (0x90, 0x60, 0x30), "区内被误压暗：%r" % (inside,)
+    assert all(c < e for c, e in zip(outside, (0x90, 0x60, 0x30))), \
+        "区外未压暗：%r" % (outside,)
+
+
+def test_gdi_vector_chinese_text():
+    """GDI+ DrawString 系统字体：中文 text 不再降级占位框——输出可解
+    且文字区出现非底色笔画。"""
+    from ashot import annotate_gdi
+    out, backend = annotate_gdi.annotate_png_vector(
+        _img(400, 120),
+        [{"kind": "text", "x": 20, "y": 40, "text": "中文标注测试",
+          "size": 28, "color": "#FFFFFF"}])
+    assert backend == "gdi+", backend
+    _, _, px = annotate._decode_png(out)
+    white = sum(1 for i in range(0, len(px), 4)
+                if px[i] > 0xD0 and px[i + 1] > 0xD0 and px[i + 2] > 0xD0)
+    assert white > 100, "中文文字未渲染出笔画（%d 白像素）" % white
