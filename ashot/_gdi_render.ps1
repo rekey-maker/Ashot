@@ -55,9 +55,12 @@ foreach ($s in $spec.shapes) {
     }
     elseif ($s.t -eq 'text') {
         $brush = New-Object System.Drawing.SolidBrush($col)
+        # v0.1.9: font family + bold come from the op (defaults filled by
+        # vector.py); unknown family names fall back silently inside GDI+
+        $style = [System.Drawing.FontStyle]::Bold
+        if ($s.bold -eq $false) { $style = [System.Drawing.FontStyle]::Regular }
         $font = New-Object System.Drawing.Font(
-            'Microsoft YaHei UI', [float]$s.size,
-            [System.Drawing.FontStyle]::Bold,
+            [string]$s.font, [float]$s.size, $style,
             [System.Drawing.GraphicsUnit]::Pixel)
         $g.DrawString($s.s, $font, $brush, [float]$s.x, [float]$s.y)
         $brush.Dispose(); $font.Dispose()

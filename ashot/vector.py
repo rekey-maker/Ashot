@@ -15,6 +15,7 @@ import math
 
 DEFAULT_COLOR = "#FF3B30"
 DEFAULT_WIDTH = 3
+DEFAULT_FONT = "Microsoft YaHei UI"   # v0.1.9 前写死于渲染脚本，现提为缺省值
 
 
 def _hex(color):
@@ -181,7 +182,9 @@ def compile_ops(ops):
                            "y": float(op.get("y", 0)),
                            "s": str(op.get("text", "")),
                            "size": float(op.get("size", 16)),
-                           "color": color})
+                           "color": color,
+                           "font": str(op.get("font", DEFAULT_FONT)),
+                           "bold": bool(op.get("bold", True))})
         else:
             raise ValueError("未知标注 kind：%r" % kind)
     return {"shapes": shapes, "pixel_ops": pixel_ops}

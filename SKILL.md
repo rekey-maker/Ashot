@@ -27,7 +27,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   `~\Ashot\shots\shot_时间戳.png`）；`--clip` 只进剪贴板；`--open` 截完即看；
   `--retention-days N`（缺省 30，运行顺手清过期旧图）；`--keep` 跳过清理。
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
-  **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注）/mosaic/blur/
+  **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注；v0.1.9 起可选
+  `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
+  未安装字体名 GDI+ 静默回退默认字体）/mosaic/blur/
   step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
   smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=

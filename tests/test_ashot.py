@@ -695,3 +695,50 @@ def test_gdi_vector_chinese_text():
     white = sum(1 for i in range(0, len(px), 4)
                 if px[i] > 0xD0 and px[i + 1] > 0xD0 and px[i + 2] > 0xD0)
     assert white > 100, "中文文字未渲染出笔画（%d 白像素）" % white
+
+
+# ---------- v0.1.9 文字字体设置 ----------
+
+def test_text_font_and_bold_compile():
+    """compile：font/bold 透传进 text shape；缺省=微软雅黑 + 粗体。"""
+    from ashot import vector
+    dflt = vector.compile_ops([{"kind": "text", "x": 0, "y": 0,
+                                "text": "hi"}])["shapes"][0]
+    assert dflt["font"] == "Microsoft YaHei UI", dflt["font"]
+    assert dflt["bold"] is True
+    custom = vector.compile_ops([{"kind": "text", "x": 0, "y": 0,
+                                  "text": "hi", "font": "Consolas",
+                                  "bold": False}])["shapes"][0]
+    assert custom["font"] == "Consolas" and custom["bold"] is False
+
+
+def test_text_font_render_smoke():
+    """渲染冒烟：指定字体正常出墨；未安装字体名静默回退不崩（§7.8.2）。"""
+    from ashot import annotate_gdi
+    for font in ("Times New Roman", "NoSuchFontXYZ"):
+        out, backend, pixel_n = annotate_gdi.annotate_png_vector(
+            _img(400, 120),
+            [{"kind": "text", "x": 20, "y": 30, "text": "Font Test 测试",
+              "size": 36, "color": "#FFFFFF", "font": font}])
+        assert backend == "gdi+", (font, backend)
+        assert pixel_n == 0
+        _, _, px = annotate._decode_png(out)
+        white = sum(1 for i in range(0, len(px), 4)
+                    if px[i] > 0xD0 and px[i + 1] > 0xD0
+                    and px[i + 2] > 0xD0)
+        assert white > 50, "font=%s 文字未出墨（%d 白像素）" % (font, white)
+
+
+def test_text_font_pixel_path_ignores():
+    """像素降级路向后兼容：text op 携带 font/bold 字段不炸（被忽略），
+    ASCII 仍走 8×16 点阵。"""
+    out = annotate.annotate_png(_img(200, 80),
+                                [{"kind": "text", "x": 20, "y": 20,
+                                  "text": "pixel", "size": 16,
+                                  "color": "#FFFFFF",
+                                  "font": "Times New Roman",
+                                  "bold": False}])
+    _, _, px = annotate._decode_png(out)
+    white = sum(1 for i in range(0, len(px), 4)
+                if px[i] > 0xD0 and px[i + 1] > 0xD0 and px[i + 2] > 0xD0)
+    assert white > 10, "像素路 ASCII 文字未出墨（%d）" % white

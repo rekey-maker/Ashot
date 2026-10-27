@@ -65,7 +65,9 @@ def _screens():
 
 def _annotate(image, ops, out=None):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
-    text(中文可标注，GDI+ 系统字体)/mosaic/blur/step(自动递增编号)/
+    text(中文可标注，GDI+ 系统字体；v0.1.9 起可选 font=字体族名/bold=
+    粗体开关，缺省微软雅黑+粗体；未安装字体名静默回退默认；font/bold
+    仅矢量路生效，像素降级路不认)/mosaic/blur/step(自动递增编号)/
     number(显式编号 value)/spotlight(聚光灯 dim)/smarterase(智能擦除)。
     矢量抗锯齿渲染（GDI+），失败自动降级纯像素画布。收据 backend=形状
     渲染后端（gdi+=矢量成功/pixel=降级或纯像素，混合 ops 时 gdi+ 仍
