@@ -299,32 +299,32 @@ def annotate_png(png_bytes, ops):
         color = _color(op.get("color"))
         width = int(op.get("width", DEFAULT_WIDTH))
         if kind in ("step", "number", "text"):
-            # v0.1.2 审查 P3-2：x/y 缺省 0 是死代码（_nums 先抛错）——
-            # step/number 跳过 _nums，缺 x/y 用缺省值
-            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
-                             int(op.get("size", 16)), color)
+            # v0.1.3（二轮审查 P1-B 收口）：text **无圆底**——v0.1.2 重构
+            # 把前置 circle_filled 残留给了三元组（step/number 画两遍、
+            # text 画一遍实心盘且字形同色不可见）。现圆底仅 step/number。
+            sz = int(op.get("size", 16))
+            body, color_body, ox, oy, draw_disc = None, color, 0, 0, False
             if kind == "step":
                 step_n += 1           # 先递增：编号从 1 起（'0' 是 bug 实锤）
                 body, color_body = str(step_n), (255, 255, 255)
+                draw_disc, ox, oy = True, sz // 4, sz // 4
             elif kind == "number":
-                body = str(op.get("value", op.get("n", "1")))
-                color_body = (255, 255, 255)
+                body, color_body = (str(op.get("value", op.get("n", "1"))),
+                                    (255, 255, 255))
+                draw_disc, ox, oy = True, sz // 4, sz // 4
             else:   # text
                 body = str(op.get("text", ""))
-                color_body = color
-            sz = int(op.get("size", 16))
-            if kind != "text":
+            if draw_disc:
                 cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
                                  sz, color)
-                ox, oy = sz // 4, sz // 4
-            else:
-                ox = oy = 0
             cv.text(int(op.get("x", 0)) + ox, int(op.get("y", 0)) + oy,
                     body, color_body, sz)
             continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")
-                  else "xyxy" if kind == "arrow" else None)
+                  else "xyxy" if kind in ("arrow", "line")   # v0.1.3 二轮审查
+                  # P1-A 收口：line 漏出 xyxy 组 = 原语全灭
+                  else None)
 
         if kind == "rect":
             cv.rect(*n, color, width)

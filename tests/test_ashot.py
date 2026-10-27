@@ -222,3 +222,52 @@ def test_smarterase_fills_with_edge_mean():
     mid = _px_at(out, 30, 10)
     # 均值色介于红蓝之间（R 与 B 都非 0）
     assert 0 < mid[0] < 255 and 0 < mid[2] < 255, mid
+
+
+# ---------- v0.1.3 二轮审查 P1 回归 ----------
+
+def test_line_primitive_alive():
+    """P1-A 回归：line 曾被 dispatch 重构漏出 xyxy 组=原语全灭。"""
+    bg = b"\x30\x60\x90"
+    png = _img(200, 100)
+    out = annotate.annotate_png(png, [{"kind": "line", "x1": 5, "y1": 5,
+                                       "x2": 100, "y2": 50, "width": 1}])
+    _, _, px = annotate._decode_png(out)
+    drawn = sum(1 for i in range(0, len(px), 4)
+                if px[i:i + 3] != bg)
+    assert drawn > 50, "line 没画出笔画（原语死亡）"
+
+
+def test_text_has_no_disc_background():
+    """P1-B 回归：text 不得带实心圆底（v0.1.2 重构残留——797 个红像素）。"""
+    red = b"\xff\x3b\x30"
+    png = _img(200, 100)   # 底色同前
+    out = annotate.annotate_png(png, [{"kind": "text", "x": 50, "y": 30,
+                                       "text": "A", "color": "#FFFFFF",
+                                       "size": 16}])
+    _, _, px = annotate._decode_png(out)
+    reds = sum(1 for i in range(0, len(px), 4)
+               if px[i:i + 3] == red)
+    assert reds <= 40, "text 带实心圆盘（%d 红像素——字形本身只需 ~40）" % reds
+
+
+def test_step_number_disc_drawn_once():
+    """P1-B 伴随：step/number 圆底只画一次（两遍幂等但浪费）。"""
+    from ashot import font8x16
+    red = b"\xff\x3b\x30"
+    png = _img(200, 100)
+    out = annotate.annotate_png(png, [{"kind": "step", "x": 10, "y": 10,
+                                       "size": 16}])
+    _, _, px = annotate._decode_png(out)
+    reds = sum(1 for i in range(0, len(px), 4)
+               if px[i:i + 3] == red)
+    assert 0 < reds < 900, "圆底缺失或异常放大（%d）" % reds
+
+
+def test_unknown_kind_still_raises_cleanly():
+    """未知 kind 报错文案仍含 kind 名（_NUM_KEYS 守卫接住后不许丢信息）。"""
+    try:
+        annotate.annotate_png(_img(), [{"kind": "nuke"}])
+        raise AssertionError("未知 kind 未报错")
+    except ValueError as e:
+        assert "nuke" in str(e)
