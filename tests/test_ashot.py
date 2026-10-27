@@ -271,3 +271,21 @@ def test_unknown_kind_still_raises_cleanly():
         raise AssertionError("未知 kind 未报错")
     except ValueError as e:
         assert "nuke" in str(e)
+
+
+# ---------- v0.1.4 EnumDisplayMonitors 实装回归 ----------
+
+def test_list_screens_returns_real_monitors():
+    """v0.1.3 漏调 EnumDisplayMonitors（自调用回调=None→0×0 空屏）。
+    修复后至少 1 块屏、主屏非零尺寸。"""
+    from ashot import capture
+    screens = capture.list_screens()
+    assert len(screens) >= 1, "枚举不到显示器"
+    assert all(s["w"] > 0 and s["h"] > 0 for s in screens), "存在 0×0 空屏"
+    assert any(s["primary"] for s in screens), "无主屏标记"
+
+
+def test_list_screens_indices_sequential():
+    from ashot import capture
+    screens = capture.list_screens()
+    assert [s["index"] for s in screens] == list(range(len(screens)))

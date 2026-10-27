@@ -43,7 +43,7 @@ def list_screens():
         _fields_ = [("cb", ctypes.c_ulong), ("rcMonitor", RECT),
                     ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
 
-    cb = ctypes.WINFUNCTYPE(
+    CB = ctypes.WINFUNCTYPE(
         ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
         ctypes.POINTER(RECT), ctypes.c_void_p)
 
@@ -57,7 +57,12 @@ def list_screens():
                         "primary": bool(r.l == 0 and r.t == 0)})
         return 1
 
-    cb(on_monitor)(None, None, None, None)
+    cb = CB(on_monitor)   # v0.1.4：显式 argtypes 原型（windll 无原型时
+    # 函数指针按 int 传=ArgumentError；v0.1.3 更漏调 API 本体）
+    EnumDisp = U32.EnumDisplayMonitors
+    EnumDisp.argtypes = [ctypes.c_void_p, ctypes.c_void_p, CB, ctypes.c_void_p]
+    EnumDisp.restype = ctypes.c_int
+    EnumDisp(0, 0, cb, 0)
     for i, sc in enumerate(screens):
         sc["index"] = i
     return screens
