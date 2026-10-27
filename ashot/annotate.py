@@ -121,9 +121,10 @@ class Canvas:
             prev = (px, py)
 
     def arrow(self, x1, y1, x2, y2, color, width=DEFAULT_WIDTH, style="fat"):
-        """渐变实心箭头（v0.1.6 缺省）：尾细头胖圆盘扫掠 + 实心三角头
-        （微信截图风格，用户裁决「效果最好」）。style="line" 回退旧式
-        恒粗直杆细箭头。"""
+        """渐变实心箭头（v0.1.6 缺省；v0.1.8 几何重校准）：头长=头宽=
+        3.5×width 细三角 + 短箭封顶 0.4×全长 + 杆恒定≈width（尾 0.35×width
+        幂 0.75 温和渐变）+ 圆尾，与矢量版同参数语义（设计文档 §7.7.3）。
+        style="line" 回退旧式恒粗直杆细箭头。"""
         if style == "line":
             self._arrow_line(x1, y1, x2, y2, color, width)
             return
@@ -132,16 +133,15 @@ class Canvas:
         if dist < 1:
             return
         ux, uy = dx / dist, dy / dist
-        head_len = max(12.0, width * 5.0)     # 三角头长度（随 width 缩放）
-        head_half = head_len * 0.72           # 三角头半底宽
-        r_tail = max(1.8, width * 0.6)        # 尾部半径（自然圆尾）
-        r_head = head_half * 0.55             # 杆末端最胖半径，接三角底
+        head_len = min(max(10.0, width * 3.5), dist * 0.4)   # 短箭封顶
+        head_half = max(head_len * 0.5, width * 0.5)   # 头底不窄于杆端（极短箭域防凹肩）
+        r_tail = max(1.2, width * 0.35)
+        r_head = width * 0.5   # 杆接头=名义宽，零膨胀
         shaft_len = max(0.0, dist - head_len)
         steps = max(8, int(shaft_len * 2))
         for i in range(steps + 1):
             s = shaft_len * i / steps
-            # 幂 0.6 快速增粗：线性渐变尾巴太细（针状），微信观感是尾就饱满
-            t = (s / shaft_len) ** 0.6 if shaft_len > 0 else 1.0
+            t = (s / shaft_len) ** 0.75 if shaft_len > 0 else 1.0
             r = r_tail + (r_head - r_tail) * t
             self._disc(x1 + ux * s, y1 + uy * s, r, color)
         bx, by = x2 - ux * head_len, y2 - uy * head_len   # 三角底边中点

@@ -83,23 +83,26 @@ def _stroke(pts, color, width):
 
 
 def _fat_arrow_poly(x1, y1, x2, y2, width):
-    """渐变实心箭头多边形（幂 0.6 快速增粗杆 + 实心三角头 + 圆尾）。
-    与像素版 arrow 同参数语义（width=头部粗细基准）。"""
+    """渐变实心箭头多边形（v0.1.8 重校准）：头长=头宽=3.5×width（1:1 细
+    三角）、短箭头长封顶 0.4×全长、杆恒定≈width（尾 0.35×width 幂 0.75
+    温和渐变）+ 实心三角头 + 圆尾。与像素版 arrow 同参数语义
+    （width=头部粗细基准）。业界参照（2026-10-28 调研，设计文档 §7.7.2）：
+    Flameshot 杆恒定+细长三角头+短箭 clamp；matplotlib 头宽≤头长。"""
     dx, dy = x2 - x1, y2 - y1
     dist = math.hypot(dx, dy)
     if dist < 1:
         return []
     ux, uy = dx / dist, dy / dist
-    head_len = max(12.0, width * 5.0)
-    head_half = head_len * 0.72
-    r_tail = max(1.8, width * 0.6)
-    r_head = head_half * 0.55
+    head_len = min(max(10.0, width * 3.5), dist * 0.4)   # 短箭封顶
+    head_half = max(head_len * 0.5, width * 0.5)   # 头底不窄于杆端（极短箭域防凹肩）
+    r_tail = max(1.2, width * 0.35)
+    r_head = width * 0.5   # 杆接头=名义宽，零膨胀（旧 2×width 已废）
     shaft_len = max(0.0, dist - head_len)
     right, left = [], []
     steps = max(8, int(shaft_len * 2))
     for i in range(steps + 1):
         s = shaft_len * i / steps
-        t = (s / shaft_len) ** 0.6 if shaft_len > 0 else 1.0
+        t = (s / shaft_len) ** 0.75 if shaft_len > 0 else 1.0
         r = r_tail + (r_head - r_tail) * t
         px, py = x1 + ux * s, y1 + uy * s
         right.append((px - uy * r, py + ux * r))   # +n̂ 侧，n̂=(-uy,ux)
@@ -110,8 +113,10 @@ def _fat_arrow_poly(x1, y1, x2, y2, width):
     poly.append((x2, y2))
     poly.append((bx + uy * head_half, by - ux * head_half))
     poly.extend(left[::-1])
-    # 圆尾：从 +n̂r_tail 绕过 -t̂ 到 -n̂r_tail（θ 0→π）
-    for i in range(1, 13):
+    # 圆尾：从 -n̂r_tail（left[::-1] 末端）绕过 -t̂ 扫回 +n̂r_tail（=poly[0]，
+    # a=π→0；闭合边零长。v0.1.8 修正旧正向追加——弧走反方向会在尾帽
+    # 留下亚像素月牙缝，审计 P3-4）
+    for i in range(11, -1, -1):
         a = math.pi * i / 12
         r = r_tail
         poly.append((x1 + r * (math.cos(a) * -uy + math.sin(a) * -ux),

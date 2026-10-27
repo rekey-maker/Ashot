@@ -55,19 +55,28 @@ def _render_ps(spec, timeout=60):
 
 
 def annotate_png_vector(png_bytes, ops):
-    """矢量标注入口。返回 (png_bytes, backend)：
-    ("gdi+")=矢量抗锯齿成功；("pixel")=降级纯像素画布。
-    混合 ops（矢量形状+像素操作）：GDI+ 先画形状，像素操作再叠加。"""
+    """矢量标注入口。返回 (png_bytes, backend, pixel_ops)：
+    backend: "gdi+"=矢量形状经 GDI+ 渲染成功（像素 ops 若有则另叠加，
+             见 pixel_ops——v0.1.8 A 方案：backend 只反映形状渲染后端，
+             混合 ops 不再谎报 pixel）；"pixel"=形状降级纯像素画布，
+             或无矢量形状（纯像素 ops）。
+    pixel_ops: 参与叠加的像素操作数量（恒返回，收据透出）。
+    混合 ops（矢量形状+像素操作）：GDI+ 先画形状，像素操作再叠加——
+    像素 ops 恒最后生效，与 ops 数组位置无关（设计文档 §7.7.5）。"""
     from . import annotate as _px   # 像素画布（降级路 + 像素 ops 叠加路）
     spec = vector.compile_ops(ops)
     spec["_src_png"] = png_bytes
+    pixel_n = len(spec["pixel_ops"])
     out = None
     if spec["shapes"]:
         out = _render_ps(spec)
     if out is None:
         if spec["shapes"]:   # 矢量路失败：整单降级像素版
-            return _px.annotate_png(png_bytes, ops), "pixel"
+            return _px.annotate_png(png_bytes, ops), "pixel", pixel_n
         out = png_bytes      # 纯像素 ops：无矢量形状，跳过 GDI+
+        backend = "pixel"
+    else:
+        backend = "gdi+"
     if spec["pixel_ops"]:
         cv = _px.Canvas(out)
         for op in spec["pixel_ops"]:
@@ -82,5 +91,4 @@ def annotate_png_vector(png_bytes, ops):
             elif kind == "smarterase":
                 cv.smarterase(*n)
         out = cv.to_png()
-        return out, "pixel"
-    return out, "gdi+"
+    return out, backend, pixel_n

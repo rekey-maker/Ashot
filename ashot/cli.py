@@ -43,11 +43,12 @@ def _cmd_annotate(a):
         else:
             with open(a.ops_file, encoding="utf-8") as fh:
                 ops = json.load(fh)
-        out, backend = annotate_gdi.annotate_png_vector(png, ops)
+        out, backend, pixel_n = annotate_gdi.annotate_png_vector(png, ops)
         path = output.save(out, out=a.out or
                            a.image.rsplit(".", 1)[0] + "_annotated.png")
         print(path)
         print("backend: %s" % backend)
+        print("pixel_ops: %d" % pixel_n)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)

@@ -31,11 +31,17 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
   smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
-  渐变实心箭头（尾细头胖+三角头，微信截图风格；`"style":"line"` 回退
-  旧直杆）；`rect` 可选 `radius`（圆角描边）。
-  **渲染双后端（v0.1.7）**：矢量形状走 GDI+（System.Drawing 抗锯齿，
-  真矢量——边缘平滑无马赛克感，文字走微软雅黑）；GDI+ 失败自动降级
-  纯像素画布（硬边）。收据 `backend` 字段如实标注 gdi+/pixel。
+  渐变实心箭头（v0.1.8 重校准：细杆恒定≈width + 1:1 细三角头，头长=
+  头宽=3.5×width，短箭头长封顶 0.4×全长；端点定总长，杆=总长−头可
+  自由伸缩；`"style":"line"` 回退旧直杆）；`rect` 可选 `radius`（圆角
+  描边）。**width 用量**：4K 截图 10~14、1080p 4~6（width=杆像素粗细）。
+  **渲染双后端（v0.1.7 矢量 / v0.1.8 收据）**：矢量形状走 GDI+
+  （System.Drawing 抗锯齿，真矢量——边缘平滑无马赛克感，文字走微软
+  雅黑）；GDI+ 失败自动降级纯像素画布（硬边）。收据 `backend` 只反映
+  形状渲染后端（`gdi+`=矢量成功 / `pixel`=降级或纯像素，混合 ops 仍
+  gdi+），`pixel_ops`=像素操作数量；**像素 ops（mosaic/blur/spotlight/
+  smarterase）恒在形状之后叠加，与 ops 数组位置无关**（spotlight 排
+  第 1 也会把画在框外的形状压暗）。
   例：
   `annotate shot.png '[{"kind":"rect","x":10,"y":10,"w":200,"h":50,
   "width":8,"color":"#07C160","radius":12},
