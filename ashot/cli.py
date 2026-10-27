@@ -24,7 +24,7 @@ def _cmd_shot(a):
             return 1
         print("已进剪贴板（未落盘）")
         return 0
-    path = output.save(png, out=a.out, mode=a.mode)
+    path = output.save(png, out=a.out)
     if a.open:
         os_startfile(path)
     n, mb = output.gc(retention_days=a.retention_days, keep=a.keep)
@@ -38,8 +38,11 @@ def _cmd_annotate(a):
     try:
         with open(a.image, "rb") as fh:
             png = fh.read()
-        ops = json.loads(a.ops) if a.ops_file is None else json.load(
-            open(a.ops_file, encoding="utf-8"))
+        if a.ops_file is None:
+            ops = json.loads(a.ops)
+        else:
+            with open(a.ops_file, encoding="utf-8") as fh:
+                ops = json.load(fh)
         out = annotate.annotate_png(png, ops)
         path = output.save(out, out=a.out or
                            a.image.rsplit(".", 1)[0] + "_annotated.png")

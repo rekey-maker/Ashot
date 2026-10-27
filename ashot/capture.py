@@ -18,7 +18,9 @@ import sys
 import time
 
 U32 = ctypes.windll.user32
-K32 = ctypes.windll.kernel32
+G32 = ctypes.windll.gdi32   # BitBlt/CreateCompatibleDC 等 GDI 族在 gdi32——
+# v0.1.5 实锤：曾全部挂 user32（无该导出）→ 主路自 v0.1.0 起每次必抛
+# AttributeError 静默降级 PS 兜底，GDI 路从未真正跑过
 
 
 def _dpi_aware():
@@ -72,29 +74,47 @@ def _shot_gdi(box):
     """主路：GDI BitBlt 抓 box=(l, t, w, h) -> (w, h, BGRA bytes)。"""
     _dpi_aware()
     l, t, w, h = box
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32),
+                    ("biHeight", ctypes.c_int32), ("biPlanes", ctypes.c_uint16),
+                    ("biBitCount", ctypes.c_uint16),
+                    ("biCompression", ctypes.c_uint32),
+                    ("biSizeImage", ctypes.c_uint32),
+                    ("biXPelsPerMeter", ctypes.c_int32),
+                    ("biYPelsPerMeter", ctypes.c_int32),
+                    ("biClrUsed", ctypes.c_uint32),
+                    ("biClrImportant", ctypes.c_uint32)]
+
     src = U32.GetDC(0)
-    mem = U32.CreateCompatibleDC(src)
-    bmi = ctypes.c_buffer(40)
-    ctypes.windll.kernel32.RtlZeroMemory(bmi, 40)
-    ctypes.cast(bmi, ctypes.POINTER(ctypes.c_uint32))[0] = 40  # biSize
-    ints = ctypes.cast(bmi, ctypes.POINTER(ctypes.c_int32))
-    ints[1] = w
-    ints[2] = -h                      # 负高=top-down
-    ints[3] = 1                       # biPlanes
-    ints[4] = 32                      # biBitCount
-    BI_RGB = 0
-    ints[5] = BI_RGB
+    mem = G32.CreateCompatibleDC(src)
+    hbm = G32.CreateCompatibleBitmap(src, w, h)
+    old = G32.SelectObject(mem, hbm)
+    ok = G32.BitBlt(mem, 0, 0, w, h, src, l, t, 0x00CC0020)   # SRCCOPY。
+    # 刻意不加 CAPTUREBLT(0x40000000)：加上分层窗口可入图，但每次调用
+    # 都会引发光标闪烁——高频截图工具的取舍，声明于此
+    bmi = BITMAPINFOHEADER()   # 手撸偏移版曾把 biPlanes/biBitCount 挤进同
+    # 一个 int（biBitCount=0、biCompression=32 非法）→ GetDIBits 恒 0：
+    # GDI 主路带病两层（挂错 DLL + bmi 头坏），v0.1.5 探针实锤
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = w
+    bmi.biHeight = -h          # 负高 = top-down
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0      # BI_RGB
     buf = ctypes.create_string_buffer(w * h * 4)
-    old = U32.SelectObject(mem, U32.CreateCompatibleBitmap(src, w, h))
-    ok = U32.BitBlt(mem, 0, 0, w, h, src, l, t, 0x00CC0020)   # SRCCOPY
-    got = U32.GetDIBits(mem, U32.GetCurrentObject(mem, 7), 0, h,
-                        buf, bmi, 0)  # 7=OBJ_BITMAP, DIB_RGB_COLORS
-    U32.SelectObject(mem, old)
-    U32.DeleteDC(mem)
+    G32.SelectObject(mem, old)   # GetDIBits 硬规则：位图不得选在 DC 里
+    got = G32.GetDIBits(mem, hbm, 0, h, buf, ctypes.byref(bmi), 0)
+    G32.DeleteObject(hbm)   # v0.1.5 P1：位图句柄必须删——长驻 MCP 进程
+    # 每截一张漏 1 个 GDI 对象，约万张触满配额后主路永久报废
+    G32.DeleteDC(mem)
     U32.ReleaseDC(0, src)
     if not ok or not got:
-        raise OSError("GDI 抓屏失败（BitBlt/GetDIBits 返回 0）")
-    return w, h, buf.raw
+        raise OSError("GDI 抓屏失败（BitBlt=%s GetDIBits=%s）" % (ok, got))
+    raw = bytearray(buf.raw)
+    raw[3::4] = b"\xff" * (w * h)   # BI_RGB 32bpp 的 alpha 字节未定义（实测
+    # 常为 0）——透传会编码出全透明 PNG，桌面抓屏一律按不透明处理
+    return w, h, bytes(raw)
 
 
 def _shot_ps(box):
@@ -107,13 +127,19 @@ def _shot_ps(box):
         "$b = New-Object System.Drawing.Bitmap %d, %d;"
         "$g = [System.Drawing.Graphics]::FromImage($b);"
         "$g.CopyFromScreen(%d, %d, 0, 0, $b.Size);"
-        "$b.Save('%s');" % (w, h, l, t, out.replace("\\", "\\\\"))
+        # PowerShell 单引号串不处理反斜杠转义，唯一要转义的是撇号本身
+        "$b.Save('%s');" % (w, h, l, t, out.replace("'", "''"))
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                   check=True, capture_output=True, timeout=60)
-    with open(out, "rb") as fh:
-        png = fh.read()
-    os.unlink(out)
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                       check=True, capture_output=True, timeout=60)
+        with open(out, "rb") as fh:
+            png = fh.read()
+    finally:
+        try:
+            os.unlink(out)   # 阅读失败/PS 失败都不残留临时文件
+        except OSError:
+            pass
     return ("png", png)
 
 
@@ -127,6 +153,8 @@ def _screen_box(index):
     screens = list_screens()
     if not screens:
         raise RuntimeError("枚举不到任何显示器")
+    if index < 0:
+        raise IndexError("屏序号从 0 起，不接受负数：%d" % index)
     if index >= len(screens):
         raise IndexError("只有 %d 块屏，没有第 %d 块" % (len(screens), index + 1))
     sc = screens[index]

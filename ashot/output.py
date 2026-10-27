@@ -46,17 +46,28 @@ def default_dir():
     return d
 
 
-def save(png_bytes, out=None, mode="full"):
-    """PNG 落盘。out=None 时缺省目录+时间戳命名；out 是目录则在其中命名。"""
+_NAME_SEQ = 0
+
+
+def _default_name():
+    """缺省文件名：秒级时间戳 + 进程内单调序号。纯秒级命名同秒连截两张
+    会同名静默覆盖（v0.1.5 审查实锤）；时钟尾数防撞不行——Windows 时钟
+    粒度粗，连续两次 time_ns 同值（测试实锤），序号才是严格唯一。"""
+    global _NAME_SEQ
+    _NAME_SEQ += 1
+    return time.strftime("shot_%Y%m%d_%H%M%S") + "_%04d.png" % _NAME_SEQ
+
+
+def save(png_bytes, out=None):
+    """PNG 落盘。out=None 时缺省目录+时间戳命名；out 是目录（或无扩展名
+    路径）则**在其中**生成缺省文件名（v0.1.5 P2 根修：旧实现无视传入
+    目录、悄悄落到缺省目录）。"""
     if out:
-        d = os.path.dirname(os.path.abspath(out))
         if os.path.isdir(out) or not os.path.splitext(out)[1]:
-            d = out
-            out = None
-        os.makedirs(d, exist_ok=True)
-    if not out:
-        out = os.path.join(default_dir(),
-                           time.strftime("shot_%Y%m%d_%H%M%S") + ".png")
+            out = os.path.join(out, _default_name())
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    else:
+        out = os.path.join(default_dir(), _default_name())
     with open(out, "wb") as fh:
         fh.write(png_bytes)
     return out
@@ -93,7 +104,8 @@ def gc(retention_days=RETENTION_DAYS_DEFAULT, keep=False, directory=None):
         return 0, 0.0
     d = directory or default_dir()
     n, freed = 0, 0
-    cutoff = time.time() - retention_days * 86400
+    now = time.time()
+    cutoff = now - retention_days * 86400
     for name in os.listdir(d):
         f = os.path.join(d, name)
         if not name.lower().endswith(".png") or not os.path.isfile(f):
@@ -102,6 +114,9 @@ def gc(retention_days=RETENTION_DAYS_DEFAULT, keep=False, directory=None):
             st = os.stat(f)
         except OSError:
             continue
+        if now - st.st_mtime < 120:
+            continue   # 刚落盘的新图一律豁免：retention_days=0 且 mtime
+            # 同秒时 cutoff≈mtime，时钟粒度会误删本次调用刚存的图
         if st.st_mtime < cutoff:
             freed += st.st_size
             os.unlink(f)

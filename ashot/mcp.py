@@ -8,8 +8,6 @@
 import json
 import os
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,26 +17,18 @@ TOOLS = {}
 
 
 def _tool(fn):
-    TOOLS[fn.__name__] = {
-        "name": fn.__name__,
-        "description": fn.__doc__ or "",
-        "inputSchema": {"type": "object",
-                        "properties": {},
-                        "required": [p for p in
-                                     fn.__code__.co_varnames[:fn.__code__.co_argcount]
-                                     if p not in ()]},
-        "required": [],
-    }
-    # 简易 schema：从默认值推 required/optional
+    # 简易 schema：从默认值推 required/optional；统一 string，工具内自转型
     code = fn.__code__
     names = code.co_varnames[:code.co_argcount]
     defaults = fn.__defaults__ or ()
     req = list(names[:len(names) - len(defaults)])
-    props = {}
-    for n in names:
-        props[n] = {"type": "string"}   # 统一 string，工具内自转型（够用）
-    TOOLS[fn.__name__]["inputSchema"] = {
-        "type": "object", "properties": props, "required": req}
+    props = {n: {"type": "string"} for n in names}
+    TOOLS[fn.__name__] = {
+        "name": fn.__name__,
+        "description": fn.__doc__ or "",
+        "inputSchema": {"type": "object", "properties": props,
+                        "required": req},
+    }
     return fn
 
 
@@ -47,20 +37,22 @@ def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
     """桌面截图：mode=full(全虚拟桌面)/screen(单屏,screen=序号)/win(前台窗口)
     /area(区域,area=[l,t,w,h])。返回 PNG 绝对路径；clip=true 只进剪贴板
     不落盘。每次运行顺手清理超 retention_days 的旧图（keep=true 跳过）。"""
-    r = capture.shot(mode=mode or "full", screen=screen,
-                     area=area and json.loads(area) if isinstance(area, str)
-                     else area)
+    if isinstance(area, str):
+        area = json.loads(area) if area else None
+    r = capture.shot(mode=mode or "full", screen=screen, area=area)
+    all_black = None
     if r["kind"] == "raw":
         png = output.bgra_to_png(r["w"], r["h"], r["bgra"])
+        all_black = capture.is_all_black(r["bgra"], r["w"], r["h"])
     else:
-        png = r["png"]
+        png = r["png"]   # PS 兜底路径是 PNG 字节，黑帧检测不拆解（如实 None）
     if clip in (True, "true", "True", "1"):
         if not output.clip_png(png):
             raise RuntimeError("剪贴板写入失败")
         return json.dumps({"ok": True, "clipboard": True}, ensure_ascii=False)
-    path = output.save(png, out=out, mode=mode or "full")
+    path = output.save(png, out=out)
     n, mb = output.gc(retention_days=int(retention_days or 30), keep=keep in (True, "true", "True", "1"))
-    return json.dumps({"ok": True, "path": path,
+    return json.dumps({"ok": True, "path": path, "all_black": all_black,
                        "gc": {"removed": n, "freed_mb": round(mb, 1)}},
                       ensure_ascii=False)
 
@@ -74,12 +66,18 @@ def _screens():
 def _annotate(image, ops, out=None):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     text(ASCII)/mosaic/blur/step(自动递增编号)/number(显式编号 value)/
-    spotlight(聚光灯 dim)/smarterase(智能擦除)。返回标注后 PNG 绝对路径。"""
+    spotlight(聚光灯 dim)/smarterase(智能擦除)。返回标注后 PNG 绝对路径。
+    out 缺省写 <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1 根修，
+    与 CLI 缺省行为对齐）。"""
     with open(str(image), "rb") as fh:
         png = fh.read()
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
     out_bytes = annotate.annotate_png(png, ops_list or [])
-    path = output.save(out_bytes, out=out or str(image))
+    stem = str(image)
+    default_out = (stem.rsplit(".", 1)[0] + "_annotated.png"
+                   if "." in os.path.basename(stem)
+                   else stem + "_annotated.png")
+    path = output.save(out_bytes, out=out or default_out)
     return json.dumps({"ok": True, "path": path}, ensure_ascii=False)
 
 
@@ -99,12 +97,12 @@ _stop = False
 
 
 def _serve():
-    pool = ThreadPoolExecutor(max_workers=2)
-    u32 = None
     try:
-        import msvcrt
-        u32 = msvcrt
-    except ImportError:
+        # 宿主可能以 GBK locale 裸拉起：异常文本含非 GBK 字符时 print
+        # 抛 UnicodeEncodeError 直接杀死服务——显式锁 utf-8
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001 —— 老版本无 reconfigure 不致命
         pass
     for line in sys.stdin:
         line = line.strip()
@@ -115,6 +113,13 @@ def _serve():
         except ValueError:
             print(json.dumps({"jsonrpc": "2.0", "id": None, "error": {
                 "code": -32700, "message": "坏帧"}}), flush=True)
+            continue
+        if not isinstance(req, dict):
+            # 合法 JSON 但非对象（数组/数字/字符串帧）：req.get 会抛
+            # AttributeError 杀死服务进程（v0.1.5 P2 实锤）——回 -32600
+            # 继续服务
+            print(json.dumps({"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32600, "message": "非对象帧"}}), flush=True)
             continue
         method = req.get("method", "")
         rid = req.get("id")
@@ -158,7 +163,6 @@ def _serve():
         else:
             continue
         print(json.dumps(resp, ensure_ascii=False), flush=True)
-    pool.shutdown(wait=True)
 
 
 def main():

@@ -289,3 +289,134 @@ def test_list_screens_indices_sequential():
     from ashot import capture
     screens = capture.list_screens()
     assert [s["index"] for s in screens] == list(range(len(screens)))
+
+
+# ---------- v0.1.5 审查收口回归 ----------
+
+def test_gdi_handles_no_leak():
+    """P1 回归：CreateCompatibleBitmap 句柄曾每截一张漏 1 个——长驻 MCP
+    进程约万张触 GDI 配额后主路永久报废。GetGuiResources 前后计数守恒。
+    伴随回归：GDI 族函数曾挂 user32（无导出）→ 主路从未跑通、每次静默
+    降级 PS 兜底；此测试跑真主路即锁死该回归。"""
+    import ctypes
+    from ashot import capture
+    proc = ctypes.windll.kernel32.GetCurrentProcess()
+    u32 = ctypes.windll.user32   # GetGuiResources 在 user32（非 kernel32）
+    before = u32.GetGuiResources(proc, 0)   # 0 = GR_GDIOBJECTS
+    for _ in range(5):
+        w, h, bgra = capture._shot_gdi((0, 0, 32, 32))
+        assert (w, h) == (32, 32) and len(bgra) == w * h * 4
+        assert all(bgra[3::4]), "alpha 未强制不透明（BI_RGB alpha 未定义透传）"
+    after = u32.GetGuiResources(proc, 0)
+    assert after == before, "GDI 句柄泄漏：%d -> %d" % (before, after)
+
+
+def test_decode_rejects_interlaced_png():
+    """P2 回归：interlace=1 曾被按逐行扫描线硬解 Adam7 数据 → 静默花图。
+    契约是「其他形态如实报错」。"""
+    import struct as _s
+    import zlib as _z
+
+    def chunk(tag, data):
+        c = tag + data
+        return _s.pack(">I", len(data)) + c + _s.pack(">I", _z.crc32(c))
+
+    ihdr = _s.pack(">IIBBBBB", 4, 2, 8, 6, 0, 0, 1)   # 末位 interlace=1
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+           + chunk(b"IDAT", _z.compress(b"\x00" * 40)) + chunk(b"IEND", b""))
+    try:
+        annotate._decode_png(png)
+        raise AssertionError("interlaced PNG 竟被接受")
+    except ValueError as e:
+        assert "隔行" in str(e) or "interlac" in str(e).lower()
+
+
+def test_smarterase_outside_image_raises_clean():
+    """P3 回归：区域完全在图外曾 IndexError（clamp 出负宽高后环采样越界）
+    或静默错采——现在干净报错。"""
+    try:
+        annotate.annotate_png(_img(10, 10), [{"kind": "smarterase",
+                                              "x": 15, "y": 9, "w": 4, "h": 4}])
+        raise AssertionError("图外 smarterase 竟被接受")
+    except ValueError as e:
+        assert "图外" in str(e)
+
+
+def test_spotlight_outside_image_raises_clean():
+    try:
+        annotate.annotate_png(_img(10, 10), [{"kind": "spotlight",
+                                              "x": 20, "y": 0, "w": 4, "h": 4}])
+        raise AssertionError("图外 spotlight 竟被接受")
+    except ValueError as e:
+        assert "图外" in str(e)
+
+
+def test_save_into_directory(tmp_path):
+    """P2 回归：out=目录时文件必须落在该目录内（旧实现无视传入目录、
+    悄悄落到缺省目录）。"""
+    p = output.save(_tiny_png(), out=str(tmp_path))
+    assert os.path.dirname(p) == str(tmp_path) and os.path.isfile(p)
+
+
+def test_save_extless_path_treated_as_dir(tmp_path):
+    d = tmp_path / "shots"
+    p = output.save(_tiny_png(), out=str(d))
+    assert os.path.dirname(p) == str(d) and os.path.isfile(p)
+
+
+def test_default_name_nanosecond_suffix():
+    """P2 回归：缺省名纯秒级时间戳，同秒连截两张同名静默覆盖——纳秒尾数防撞。"""
+    a, b = output._default_name(), output._default_name()
+    assert a != b, "同秒两次缺省命名撞名（尾数失效）"
+
+
+def test_gc_fresh_files_exempt_even_zero_days(tmp_path):
+    """P3 回归：retention_days=0 时 cutoff=now，mtime 同秒的刚存图曾被时钟
+    粒度误删——120 秒内新图一律豁免。"""
+    f = tmp_path / "shot_fresh.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n")
+    n, _ = output.gc(retention_days=0, directory=str(tmp_path))
+    assert n == 0 and f.exists()
+
+
+def test_mcp_survives_non_object_frame():
+    """P2 回归：合法 JSON 非对象帧（如数组）曾 AttributeError 杀死服务
+    进程——现在回 -32600 且进程继续服务后续请求。"""
+    payload = "\n".join([
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {}}),
+        "[1, 2, 3]",
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "ashot_screens", "arguments": {}}}),
+    ]) + "\n"
+    r = subprocess.run([sys.executable, "ashot_mcp.py"], input=payload,
+                       capture_output=True, text=True, cwd=ROOT, timeout=60)
+    assert r.returncode == 0, r.stderr
+    lines = [json.loads(x) for x in r.stdout.strip().splitlines()]
+    assert lines[1]["error"]["code"] == -32600, lines[1]
+    assert lines[2]["id"] == 2
+    assert "screens" in lines[2]["result"]["content"][0]["text"]
+
+
+def test_mcp_annotate_does_not_overwrite_source(tmp_path):
+    """P1 回归：MCP annotate 缺省曾静默覆盖原图——现写 *_annotated.png。"""
+    from ashot import mcp as mcp_mod
+    src = tmp_path / "in.png"
+    original = _tiny_png()
+    src.write_bytes(original)
+    res = json.loads(mcp_mod._annotate(
+        str(src), json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 2, "h": 2}])))
+    assert res["ok"] and res["path"] != str(src)
+    assert src.read_bytes() == original, "原件被覆盖"
+    assert os.path.basename(res["path"]).endswith("_annotated.png")
+    assert os.path.isfile(res["path"])
+
+
+def test_mcp_tool_schemas():
+    """P3 死代码清理后 schema 生成仍自洽：required 推导 + 属性集合。"""
+    from ashot import mcp as mcp_mod
+    assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
+                                  "ashot_annotate"}
+    sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
+    assert sc["required"] == ["image", "ops"]
+    assert set(sc["properties"]) == {"image", "ops", "out"}

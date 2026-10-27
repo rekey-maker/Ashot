@@ -35,8 +35,14 @@
 - `screens`——列出显示器。
 
 ## MCP（ashot 域名，宿主注册后可用）
-`ashot_shot`（mode/screen/out/clip/keep/retention_days/area）、
-`ashot_annotate`（image/ops）、`ashot_screens`——与 CLI 同能力。
+`ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带
+`all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」）、
+`ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
+覆盖原图**）、`ashot_screens`——与 CLI 同能力。
+
+**部署纪律（2026-10-28 实弹）**：改了 Ashot 代码后，宿主重启未必真换
+MCP 进程（进程会赖着旧代码，如 screens 返回 0×0 假象）——杀掉
+ashot_mcp.py 进程即可，宿主下次调用自动重拉新版。
 
 ## 标注形态分工
 - **C 形态（已交付）**：JSON ops 批量标注——agent 的主用路（拿到截图后

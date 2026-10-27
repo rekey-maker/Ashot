@@ -78,7 +78,8 @@ class Canvas:
         self.line(x, y + h, x, y, color, width)
 
     def ellipse(self, x, y, w, h, color, width=DEFAULT_WIDTH):
-        """中点椭圆（四象限对称 + 笔刷）。"""
+        """参数方程椭圆（步进连线 + 笔刷）。"""
+        import math
         cx, cy = x + w / 2, y + h / 2
         a, b = w / 2, h / 2
         if a <= 0 or b <= 0:
@@ -87,8 +88,7 @@ class Canvas:
         prev = None
         for i in range(step + 1):
             t = 6.2831853 * i / step
-            px, py = int(cx + a * (1 if t == 1.5707963 else __import__("math").cos(t))), \
-                int(cy + b * __import__("math").sin(t))
+            px, py = int(cx + a * math.cos(t)), int(cy + b * math.sin(t))
             if prev:
                 self.line(prev[0], prev[1], px, py, color, width)
             prev = (px, py)
@@ -165,6 +165,10 @@ class Canvas:
         x, y = max(0, x), max(0, y)
         w = min(w, self.w - x)
         h = min(h, self.h - y)
+        if w <= 0 or h <= 0:
+            raise ValueError("spotlight 区域完全在图外（clamp 后 w=%s h=%s）"
+                             % (w, h))   # 与 smarterase 同款防御：图外区域
+        # 静默无操作等于吞错，如实报
         for yy in range(self.h):
             for xx in range(self.w):
                 if x <= xx < x + w and y <= yy < y + h:
@@ -184,6 +188,11 @@ class Canvas:
         x, y = max(0, x), max(0, y)
         w = min(w, self.w - x)
         h = min(h, self.h - y)
+        if w <= 0 or h <= 0:
+            # v0.1.5 P3：区域完全在图外时 clamp 出负宽高，环采样按错行
+            # 取像素——要么 IndexError 要么静默错采，根修=clamp 后校验
+            raise ValueError("smarterase 区域完全在图外（clamp 后 w=%s h=%s）"
+                             % (w, h))
         has_top, has_bottom = y > 0, y + h < self.h
         has_left, has_right = x > 0, x + w < self.w
         if not (has_top or has_bottom or has_left or has_right):
@@ -241,6 +250,10 @@ def _decode_png(png):
         data = png[pos + 8:pos + 8 + ln]
         if tag == b"IHDR":
             w, h, depth, ctype = struct.unpack(">IIBB", data[:10])
+            if len(data) > 12 and data[12] != 0:
+                # v0.1.5 P2：interlace 不校验会按逐行扫描线硬解 Adam7
+                # 数据 → 静默花图，违背「其他形态如实报错」契约
+                raise ValueError("不支持隔行（interlaced）PNG：如实拒绝")
         elif tag == b"IDAT":
             idat += data
         elif tag == b"IEND":
