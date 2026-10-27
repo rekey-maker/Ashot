@@ -27,8 +27,9 @@
   `~\Ashot\shots\shot_时间戳.png`）；`--clip` 只进剪贴板；`--open` 截完即看；
   `--retention-days N`（缺省 30，运行顺手清过期旧图）；`--keep` 跳过清理。
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
-  **rect/ellipse/arrow/line/text（ASCII）/mosaic/blur**，坐标亦收
-  "x,y,w,h" 串。例：
+  **rect/ellipse/arrow/line/text（ASCII）/mosaic/blur/step（自动递增编号）/
+  number（显式编号 value）/spotlight（聚光灯 dim）/smarterase（智能擦除）**，
+  坐标亦收 "x,y,w,h" 串（coords/area 键）。例：
   `annotate shot.png '[{"kind":"rect","x":10,"y":10,"w":200,"h":50},
   {"kind":"arrow","x1":300,"y1":50,"x2":200,"y2":30}]'`
 - `screens`——列出显示器。

@@ -73,7 +73,8 @@ def _screens():
 
 def _annotate(image, ops, out=None):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
-    text/mosaic/blur。返回标注后 PNG 绝对路径。"""
+    text(ASCII)/mosaic/blur/step(自动递增编号)/number(显式编号 value)/
+    spotlight(聚光灯 dim)/smarterase(智能擦除)。返回标注后 PNG 绝对路径。"""
     with open(str(image), "rb") as fh:
         png = fh.read()
     ops_list = json.loads(ops) if isinstance(ops, str) else ops

@@ -114,6 +114,8 @@ class Canvas:
         中文文本标注留 B 交互窗形态——点阵字体不破零依赖红线）。"""
         from . import font8x16
         cx = x
+        sc = max(1, size // 16)   # v0.1.2 审查 P2-1：偏移与复制同一缩放——
+        # 旧实现偏移用裸 size//16（<16 时为 0），字形所有点画到同一点
         for ch in s:
             glyph = font8x16.glyph(ch)
             if glyph is None:
@@ -123,11 +125,11 @@ class Canvas:
             for row, bits in enumerate(glyph):
                 for col in range(8):
                     if bits & (0x80 >> col):
-                        for oy in range(max(1, size // 16)):
-                            for ox in range(max(1, size // 16)):
-                                self._px(cx + col * (size // 16) + ox,
-                                         y + row * (size // 16) + oy, color)
-            cx += 8 * max(1, size // 16) + 2
+                        for oy in range(sc):
+                            for ox in range(sc):
+                                self._px(cx + col * sc + ox,
+                                         y + row * sc + oy, color)
+            cx += 8 * sc + 2
 
     def mosaic(self, x, y, w, h, block=12):
         for by in range(y, y + h, block):
@@ -158,6 +160,8 @@ class Canvas:
 
     def spotlight(self, x, y, w, h, dim=0.5):
         """聚光灯：目标区保持原样，四周压暗（dim=保留亮度系数 0~1）。"""
+        if not 0 <= dim <= 1:
+            raise ValueError("dim 须在 0~1（保留亮度系数）：got %r" % dim)
         x, y = max(0, x), max(0, y)
         w = min(w, self.w - x)
         h = min(h, self.h - y)
@@ -172,27 +176,37 @@ class Canvas:
 
     def smarterase(self, x, y, w, h):
         """智能擦除：区域用「边缘均值色」实心填充——比马赛克干净
-        （纯色/渐变背景上等于消失）。边缘采样=区域四周 1px 环。"""
-        xs = list(range(max(0, x - 1), min(self.w, x + w + 1)))
-        ys_top = max(0, y - 1)
-        ys_bot = min(self.h - 1, y + h)
-        ring = []
-        for xx in xs:
-            for yy in (ys_top, ys_bot):
-                if 0 <= yy < self.h:
-                    i = (yy * self.w + xx) * 4
-                    ring.append(self.px[i:i + 3])
-        for yy in range(max(0, y), min(self.h, y + h)):
-            for xx in (max(0, x - 1), min(self.w - 1, x + w)):
-                if 0 <= xx < self.w:
-                    i = (yy * self.w + xx) * 4
-                    ring.append(self.px[i:i + 3])
+        （纯色/渐变背景上等于消失）。
+        v0.1.2 审查 P2-3：只采**真正存在的外侧**像素（y>0 才采上环……），
+        旧实现贴边时把目标区自己的首行/列采进环——擦除内容以染色形式
+        残留 40% 权重；P3-3 顶点重复计数一并去重。四边全贴图边的退化
+        情形如实报错（无外侧可采）。"""
+        x, y = max(0, x), max(0, y)
+        w = min(w, self.w - x)
+        h = min(h, self.h - y)
+        has_top, has_bottom = y > 0, y + h < self.h
+        has_left, has_right = x > 0, x + w < self.w
+        if not (has_top or has_bottom or has_left or has_right):
+            raise ValueError("smarterase 区域覆盖整图，无外侧可采样")
+        ring = set()
+        if has_top:
+            ring.update((xx, y - 1) for xx in range(x, x + w))
+        if has_bottom:
+            ring.update((xx, y + h) for xx in range(x, x + w))
+        if has_left:
+            ring.update((x - 1, yy) for yy in range(y, y + h))
+        if has_right:
+            ring.update((x + w, yy) for yy in range(y, y + h))
+        ring_px = []
+        for xx, yy in sorted(ring):
+            i = (yy * self.w + xx) * 4
+            ring_px.append(self.px[i:i + 3])
         if not ring:
             return
-        n = len(ring)
-        fill = (sum(c[0] for c in ring) // n,
-                sum(c[1] for c in ring) // n,
-                sum(c[2] for c in ring) // n)
+        n = len(ring_px)
+        fill = (sum(c[0] for c in ring_px) // n,
+                sum(c[1] for c in ring_px) // n,
+                sum(c[2] for c in ring_px) // n)
         for yy in range(max(0, y), min(self.h, y + h)):
             for xx in range(max(0, x), min(self.w, x + w)):
                 self._px(xx, yy, fill)
@@ -284,9 +298,34 @@ def annotate_png(png_bytes, ops):
         kind = op.get("kind")
         color = _color(op.get("color"))
         width = int(op.get("width", DEFAULT_WIDTH))
+        if kind in ("step", "number", "text"):
+            # v0.1.2 审查 P3-2：x/y 缺省 0 是死代码（_nums 先抛错）——
+            # step/number 跳过 _nums，缺 x/y 用缺省值
+            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
+                             int(op.get("size", 16)), color)
+            if kind == "step":
+                step_n += 1           # 先递增：编号从 1 起（'0' 是 bug 实锤）
+                body, color_body = str(step_n), (255, 255, 255)
+            elif kind == "number":
+                body = str(op.get("value", op.get("n", "1")))
+                color_body = (255, 255, 255)
+            else:   # text
+                body = str(op.get("text", ""))
+                color_body = color
+            sz = int(op.get("size", 16))
+            if kind != "text":
+                cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
+                                 sz, color)
+                ox, oy = sz // 4, sz // 4
+            else:
+                ox = oy = 0
+            cv.text(int(op.get("x", 0)) + ox, int(op.get("y", 0)) + oy,
+                    body, color_body, sz)
+            continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")
-                  else "xyxy")
+                  else "xyxy" if kind == "arrow" else None)
+
         if kind == "rect":
             cv.rect(*n, color, width)
         elif kind == "ellipse":
@@ -295,30 +334,10 @@ def annotate_png(png_bytes, ops):
             cv.arrow(*n, color, width)
         elif kind == "line":
             cv.line(*n, color, width)
-        elif kind == "text":
-            cv.text(int(op.get("x", 0)), int(op.get("y", 0)),
-                    str(op.get("text", "")), color,
-                    int(op.get("size", 16)))
         elif kind == "mosaic":
             cv.mosaic(*n, block=int(op.get("block", 12)))
         elif kind == "blur":
             cv.blur(*n)
-        elif kind == "step":
-            step_n += 1
-            size = int(op.get("size", 16))
-            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
-                             size, color)
-            cv.text(int(op.get("x", 0)) + size // 4,
-                    int(op.get("y", 0)) + size // 4, str(step_n),
-                    (255, 255, 255), size)
-        elif kind == "number":
-            size = int(op.get("size", 16))
-            value = str(op.get("value", op.get("n", "1")))
-            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
-                             size, color)
-            cv.text(int(op.get("x", 0)) + size // 4,
-                    int(op.get("y", 0)) + size // 4, value,
-                    (255, 255, 255), size)
         elif kind == "spotlight":
             cv.spotlight(*n, dim=float(op.get("dim", 0.5)))
         elif kind == "smarterase":
@@ -328,13 +347,25 @@ def annotate_png(png_bytes, ops):
     return cv.to_png()
 
 
-def _nums(op, keys):
-    """从 op 取坐标：x/y/w/h（或 x1..y2）键，或 '100,100,200,50' 串。"""
+_NUM_KEYS = {"xywh": ("x", "y", "w", "h"),
+             "xyxy": ("x1", "y1", "x2", "y2")}   # v0.1.2：显式键组（旧实现
+             # "xyxy" 按字符迭代读成 x/y/x2/y2——arrow 起点被 x2 顶替）
+
+def _nums(op, shape):
+    """从 op 取坐标四元组。两形态：显式键（x1,y1,x2,y2 / x,y,w,h）或
+    "100,100,200,50" 逗号串（v0.1.2 实装——文档曾承诺但旧实现没写）。"""
+    keys = _NUM_KEYS.get(shape)
+    if keys is None:
+        raise ValueError("未知标注 kind 或缺少坐标定义：%r" % (op.get("kind"),))
+    if all(op.get(k) is None for k in keys):
+        joined = op.get("coords") or op.get("area")
+        if isinstance(joined, str):
+            parts = [int(x) for x in joined.replace(" ", "").split(",")]
+            if len(parts) == 4:
+                return parts
     out = []
     for k in keys:
         v = op.get(k)
-        if v is None:
-            v = op.get(k + "2") if k in ("x", "y") else None
         if v is None:
             raise ValueError("op 缺坐标键 %s：%r" % (k, op))
         out.append(int(v))

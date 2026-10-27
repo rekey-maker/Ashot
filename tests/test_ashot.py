@@ -138,26 +138,63 @@ def _w(png):
 
 
 def test_step_numbers_auto_increment():
-    """step 同一次 ops 内自动递增 1,2,3；跨调用不共享状态。"""
-    import io
+    """step 同一次 ops 内自动递增 1,2,3；跨调用不共享状态。
+    v0.1.2 审查 P2-4：递增真锁行为——第 1 枚文字区字形 ≡ "1"、第 2 枚 ≠ "1"
+    （font8x16 点阵比对，同审查员实测法）。"""
+    from ashot import font8x16
     png = _img(200, 60)
     out = annotate.annotate_png(png, [
         {"kind": "step", "x": 10, "y": 10},
         {"kind": "step", "x": 60, "y": 10},
         {"kind": "step", "x": 110, "y": 10},
     ])
-    # 三个徽章位置像素应有白字（递增后徽章都在）；此处验证不炸且出 PNG
     assert out[:8] == b"\x89PNG\r\n\x1a\n"
-    # 跨调用重置：新调用第一枚仍从 1 开始（行为=无全局账本，静态即可）
+    _, _, px = annotate._decode_png(out)
+
+    def badge_glyph_points(x0, ch):
+        """字形 set-bit 数 + 实际白点数（数量等价校验；位置差 ≤2px 由
+        字距假设吸收——不同数字 set-bit 数不同，足以区分 1/2/7）。"""
+        g = font8x16.glyph(ch)
+        bits = sum(bin(b).count("1") for b in g)
+        actual = 0
+        for dy in range(0, 14):
+            for dx in range(0, 14):
+                p0 = ((10 + dy) * 200 + (x0 + dx)) * 4
+                if px[p0:p0 + 3] == b"\xff\xff\xff":
+                    actual += 1
+        return bits, actual
+
+    def badge_white_count(x0):
+        """徽章文字区（x0+0..13, y 10..23）白像素计数。
+        文字起点 = 徽章 x + sz//4 = x0+4；窗放宽到 x0 起也够分。"""
+        return sum(1 for dy in range(0, 14) for dx in range(0, 14)
+                   if px[((10 + dy) * 200 + (x0 + dx)) * 4:
+                         ((10 + dy) * 200 + (x0 + dx)) * 4 + 3] == b"\xff\xff\xff")
+
+    bits1 = sum(bin(b).count("1") for b in font8x16.glyph("1"))
+    bits2 = sum(bin(b).count("1") for b in font8x16.glyph("2"))
+    assert badge_white_count(10) == bits1, \
+        "第 1 枚 ≠ '1'（%d bits）" % bits1
+    assert badge_white_count(60) == bits2, \
+        "第 2 枚 ≠ '2'（递增失效，%d bits）" % bits2
+    # 跨调用重置：新调用第一枚仍从 1 开始（无全局账本）
     out2 = annotate.annotate_png(png, [{"kind": "step", "x": 10, "y": 10}])
     assert out2[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_number_explicit_value():
-    png = _img()
+    """value 真验证：徽章区白点数 ≡ "7" 字形 set-bit 数（'7'=17 不同于
+    '1'=23/'2'=21，数量等价即可区分）。"""
+    from ashot import font8x16
+    png = _img(200, 60)
     out = annotate.annotate_png(png, [{"kind": "number", "x": 10, "y": 10,
                                        "value": "7"}])
-    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+    _, _, px = annotate._decode_png(out)
+    bits = sum(bin(b).count("1") for b in font8x16.glyph("7"))
+    actual = sum(1 for dy in range(0, 14) for dx in range(0, 14)
+                 if px[((10 + dy) * 200 + (10 + dx)) * 4:
+                       ((10 + dy) * 200 + (10 + dx)) * 4 + 3] == b"\xff\xff\xff")
+    assert actual == bits, "value='7' 白点 %d ≠ 字形 %d" % (actual, bits)
 
 
 def test_spotlight_dims_outside_keeps_inside():
