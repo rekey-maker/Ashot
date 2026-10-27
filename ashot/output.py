@@ -6,6 +6,8 @@
 import ctypes
 import os
 import struct
+import subprocess
+import tempfile
 import time
 import zlib
 
@@ -122,3 +124,82 @@ def gc(retention_days=RETENTION_DAYS_DEFAULT, keep=False, directory=None):
             os.unlink(f)
             n += 1
     return n, freed / 2**20
+
+
+# ---------- 预览缩图（v0.1.11，MCP ImageContent 实验，设计文档 §7.10） ----------
+
+PREVIEW_WIDTH_DEFAULT = 1200
+PREVIEW_MAX_BYTES_DEFAULT = 500 * 1024
+
+
+def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
+                 max_bytes=PREVIEW_MAX_BYTES_DEFAULT):
+    """交付侧预览缩图：PNG → 等比缩小 JPEG。编码走系统 .NET
+    System.Drawing（渲染器同引擎，零依赖红线不破）。梯次 (宽,质量)
+    降档直至 ≤ max_bytes（业界口径 ~1280px/JPEG<500KB，超限保护宿主
+    上下文）；**不放大**（目标宽 = min(width, 原宽)）。
+    返回 (jpeg_bytes, info)；info = {width, quality, bytes, fit}——
+    fit=False 表示梯次到底仍超限，如实交付最小档不假装。"""
+    w2 = max(1, int(width * 0.75))
+    w3 = max(1, int(width * 0.5))
+    ladder = ((width, 85), (width, 70), (w2, 75), (w3, 60))
+    ladder_ps = ",".join("(%d,%d)" % s for s in ladder)
+    src_fd, src_path = tempfile.mkstemp(suffix=".png")
+    dst_path = src_path + ".jpg"
+    os.close(src_fd)
+    try:
+        with open(src_path, "wb") as fh:
+            fh.write(png_bytes)
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+            "Add-Type -AssemblyName System.Drawing;"
+            "$img=[System.Drawing.Image]::FromFile('%s');"
+            "foreach ($step in @(%s)) {"
+            "  $w=[Math]::Min($step[0], $img.Width);"
+            "  $h=[int]([double]$img.Height*$w/$img.Width);"
+            "  if ($h -lt 1) { $h = 1 }"
+            "  $bmp=New-Object System.Drawing.Bitmap($w,$h);"
+            "  $g=[System.Drawing.Graphics]::FromImage($bmp);"
+            "  $g.InterpolationMode="
+            "[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;"
+            "  $g.DrawImage($img,0,0,$w,$h);"
+            "  $ep=New-Object System.Drawing.Imaging.EncoderParameters(1);"
+            "  $ep.Param[0]=New-Object System.Drawing.Imaging."
+            "EncoderParameter([System.Drawing.Imaging.Encoder]::Quality,"
+            "[long]$step[1]);"
+            "  $codec=[System.Drawing.Imaging.ImageCodecInfo]::"
+            "GetImageEncoders()|Where-Object {$_.MimeType -eq 'image/jpeg'};"
+            "  $bmp.Save('%s',$codec,$ep);"
+            "  $g.Dispose();$bmp.Dispose();$ep.Dispose();"
+            "  $len=(Get-Item -LiteralPath '%s').Length;"
+            "  Write-Output (\"$w $($step[1]) $len\");"
+            "  if ($len -le %d) { break }"
+            "};"
+            "$img.Dispose()" % (src_path.replace("'", "''"),
+                                ladder_ps,
+                                dst_path.replace("'", "''"),
+                                dst_path.replace("'", "''"),
+                                max_bytes))
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                           capture_output=True, timeout=30)
+        if r.returncode != 0 or not os.path.isfile(dst_path):
+            raise RuntimeError(
+                "预览缩图失败（rc=%s）：%s" % (
+                    r.returncode,
+                    r.stderr.decode("utf-8", "replace").strip()[:200]))
+        lines = [x for x in
+                 r.stdout.decode("utf-8", "replace").splitlines()
+                 if x.strip()]
+        w_s, q_s, len_s = lines[-1].split()
+        info = {"width": int(w_s), "quality": int(q_s),
+                "bytes": int(len_s), "fit": int(len_s) <= max_bytes}
+        with open(dst_path, "rb") as fh:
+            jpeg = fh.read()
+        return jpeg, info
+    finally:
+        for p in (src_path, dst_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass

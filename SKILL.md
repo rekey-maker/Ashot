@@ -62,7 +62,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 `ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
 覆盖原图**）、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
 {ok, count, families}；**新增工具需宿主重连后才出现在工具表**）——
-与 CLI 同能力。
+与 CLI 同能力。**v0.1.11 起两工具均可选 `preview`=true：收据升级多
+内容块、附 1200px JPEG 缩图（ImageContent，audience:user；≤500KB
+梯次降档）——实验特性，宿主渲染行为待实测（设计文档 §7.10.3）。**
 
 **部署纪律（2026-10-28 实弹）**：改了 Ashot 代码后，宿主重启未必真换
 MCP 进程（进程会赖着旧代码，如 screens 返回 0×0 假象）——杀掉

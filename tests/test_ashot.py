@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Ashot v0.1.0 测试：编码器/标注原语/CLI/MCP 探针。零触网、不依赖桌面。"""
+import base64
 import json
 import os
 import subprocess
@@ -420,7 +421,11 @@ def test_mcp_tool_schemas():
                                   "ashot_annotate", "ashot_fonts"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
-    assert set(sc["properties"]) == {"image", "ops", "out"}
+    assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
+    ss = mcp_mod.TOOLS["ashot_shot"]["inputSchema"]
+    assert set(ss["properties"]) == {"mode", "screen", "out", "clip",
+                                     "keep", "area", "retention_days",
+                                     "preview"}
     fc = mcp_mod.TOOLS["ashot_fonts"]["inputSchema"]
     assert fc["required"] == []
     assert set(fc["properties"]) == {"filter"}
@@ -777,3 +782,63 @@ def test_fonts_cli_subcommand():
     out = r.stdout.decode("utf-8", "replace")
     assert "KaiTi" in out, out
     assert "total: " in r.stderr.decode("utf-8", "replace")
+
+
+# ---------- v0.1.11 preview 图片收据（MCP ImageContent 实验） ----------
+
+def _jpeg_magic(data):
+    return data[:2] == b"\xff\xd8"
+
+
+def test_shot_preview_compat_and_blocks(tmp_path):
+    """preview 缺省=false 收据仍是单字符串（兼容）；=true 升级两内容块
+    （文本收据含 preview 信息 + JPEG ImageContent，audience=user）。"""
+    from ashot import mcp as mcp_mod
+    out_png = str(tmp_path / "s.png")
+    old = mcp_mod._shot(mode="area", area=[0, 0, 64, 48], out=out_png)
+    assert isinstance(old, str) and json.loads(old)["ok"]
+
+    blocks = mcp_mod._shot(mode="area", area=[0, 0, 64, 48],
+                           out=str(tmp_path / "s2.png"), preview=True)
+    assert isinstance(blocks, list) and len(blocks) == 2
+    receipt = json.loads(blocks[0]["text"])
+    assert receipt["ok"] and receipt["preview"]["fit"] is True
+    assert blocks[1]["type"] == "image"
+    assert blocks[1]["mimeType"] == "image/jpeg"
+    assert blocks[1]["annotations"]["audience"] == ["user"]
+    assert blocks[1]["annotations"]["priority"] == 0.9
+    jpeg = base64.b64decode(blocks[1]["data"])
+    assert _jpeg_magic(jpeg), "缩图不是 JPEG"
+
+
+def test_annotate_preview_blocks(tmp_path):
+    """annotate preview=true：同样升级两内容块，缩图来自标注成品。"""
+    from ashot import mcp as mcp_mod
+    src = tmp_path / "in.png"
+    src.write_bytes(_tiny_png())
+    blocks = mcp_mod._annotate(
+        str(src), json.dumps([{"kind": "rect", "x": 0, "y": 0,
+                               "w": 2, "h": 2}]), preview=True)
+    assert isinstance(blocks, list) and len(blocks) == 2
+    receipt = json.loads(blocks[0]["text"])
+    assert receipt["ok"] and receipt["backend"] == "gdi+"
+    assert blocks[1]["type"] == "image"
+    assert _jpeg_magic(base64.b64decode(blocks[1]["data"]))
+    # 防 mutant：缩图必须来自标注成品而非源图（魔数区分不了，字节比较）
+    src_jpeg, _ = output.preview_jpeg(_tiny_png())
+    assert blocks[1]["data"] != base64.b64encode(src_jpeg).decode(), \
+        "缩图竟是源图而非标注成品"
+
+
+def test_preview_jpeg_no_upscale_and_ladder():
+    """缩图规格：不放大（4×2 源宽保持 4）；正常图落 1200px 档且 fit；
+    上限压到极小时梯次到底、如实报 fit=False 不假装。"""
+    from ashot import output
+    jpeg, info = output.preview_jpeg(_tiny_png())
+    assert _jpeg_magic(jpeg) and info["width"] == 4, info
+    big = output.bgra_to_png(2000, 1500, b"\x30\x60\x90\xff" * (2000 * 1500))
+    jpeg, info = output.preview_jpeg(big)
+    assert info["width"] == 1200 and info["fit"] is True, info
+    jpeg, info = output.preview_jpeg(big, max_bytes=500)
+    assert info["width"] == 600 and info["fit"] is False, info
+    assert len(jpeg) == info["bytes"]

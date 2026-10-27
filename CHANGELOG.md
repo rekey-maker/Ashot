@@ -2,6 +2,24 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.1.11] - 2026-10-28
+
+### 新增
+- **preview 图片收据**（MCP ImageContent 实验）：`ashot_shot` /
+  `ashot_annotate` 可选 `preview=true`——收据升级多内容块（文本收据 +
+  1200px JPEG 缩图 ImageContent，`audience:["user"]` 注解）。缩图走
+  系统 .NET（渲染器同引擎，零依赖不破），梯次
+  (1200,85)→(1200,70)→(900,75)→(600,60) 降档直至 ≤500KB，不放大，
+  梯尽仍超限如实 `fit=False`。缺省 false=现状，完全向后兼容。
+  **宿主渲染行为待实测**（设计文档 §7.10.3 实验协议）：规范原生支持
+  但各宿主参差（Claude Desktop 渲染 / Cursor 等掉图）
+- `_serve` 分发支持多内容块（handler 返回 list=预成形块，str=旧单文本）
+
+### 测试
+- 49→52：preview 兼容锁（false=单字符串）/ 结构锁（两块、mimeType、
+  JPEG 魔数、audience）/ 缩图规格（不放大、1200px fit、极小上限
+  fit=False）/ mcp schema 含 preview
+
 ## [0.1.10] - 2026-10-28
 
 ### 新增

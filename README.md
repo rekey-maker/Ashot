@@ -44,8 +44,8 @@ stdio JSON-RPC 2.0（协议 2024-11-05），四工具与 CLI 同能力：
 
 | 工具 | 作用 |
 |---|---|
-| `ashot_shot` | 截图（full/screen/win/area；收据带 `all_black` 黑帧自检） |
-| `ashot_annotate` | JSON ops 批量标注（收据带 `backend` 渲染后端 + `pixel_ops` 像素操作数） |
+| `ashot_shot` | 截图（full/screen/win/area；收据带 `all_black` 黑帧自检；`preview=true` 附 1200px JPEG 缩图 ImageContent，v0.1.11 实验特性） |
+| `ashot_annotate` | JSON ops 批量标注（收据带 `backend` 渲染后端 + `pixel_ops` 像素操作数；`preview=true` 同上） |
 | `ashot_screens` | 列显示器 |
 | `ashot_fonts` | 列已装字体族（text 的 font 先查后用；v0.1.10 起） |
 

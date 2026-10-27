@@ -5,6 +5,7 @@
   {"ashot": {"type": "stdio", "command": "python",
              "args": ["<仓库根>/ashot_mcp.py"], "cwd": "<仓库根>"}}
 """
+import base64
 import json
 import os
 import sys
@@ -32,11 +33,27 @@ def _tool(fn):
     return fn
 
 
+def _content_with_image(receipt_text, jpeg):
+    """预览内容块（v0.1.11）：文本收据 + ImageContent（audience:user，
+    语义「给用户看」；宿主是否渲染/是否喂模型由宿主实现决定——设计
+    文档 §7.10 实验协议）。"""
+    return [
+        {"type": "text", "text": receipt_text},
+        {"type": "image", "data": base64.b64encode(jpeg).decode(),
+         "mimeType": "image/jpeg",
+         "annotations": {"audience": ["user"], "priority": 0.9}},
+    ]
+
+
 def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
-          area=None, retention_days=30):
+          area=None, retention_days=30, preview=False):
     """桌面截图：mode=full(全虚拟桌面)/screen(单屏,screen=序号)/win(前台窗口)
     /area(区域,area=[l,t,w,h])。返回 PNG 绝对路径；clip=true 只进剪贴板
-    不落盘。每次运行顺手清理超 retention_days 的旧图（keep=true 跳过）。"""
+    不落盘（**clip 与 preview 同传时 clip 优先，preview 被忽略**）。
+    每次运行顺手清理超 retention_days 的旧图（keep=true 跳过）。
+    preview=true（v0.1.11 实验特性）：收据升级多内容块，附 1200px JPEG
+    缩图 ImageContent（audience:user；≤500KB 梯次降档；宿主渲染行为待
+    实测，设计文档 §7.10）。"""
     if isinstance(area, str):
         area = json.loads(area) if area else None
     r = capture.shot(mode=mode or "full", screen=screen, area=area)
@@ -52,9 +69,18 @@ def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
         return json.dumps({"ok": True, "clipboard": True}, ensure_ascii=False)
     path = output.save(png, out=out)
     n, mb = output.gc(retention_days=int(retention_days or 30), keep=keep in (True, "true", "True", "1"))
-    return json.dumps({"ok": True, "path": path, "all_black": all_black,
-                       "gc": {"removed": n, "freed_mb": round(mb, 1)}},
-                      ensure_ascii=False)
+    receipt = {"ok": True, "path": path, "all_black": all_black,
+               "gc": {"removed": n, "freed_mb": round(mb, 1)}}
+    if preview in (True, "true", "True", "1"):
+        try:
+            jpeg, info = output.preview_jpeg(png)
+            receipt["preview"] = info
+            return _content_with_image(json.dumps(receipt,
+                                                  ensure_ascii=False), jpeg)
+        except Exception as e:  # noqa: BLE001 —— 预览失败不吞主收据（审计 P2-1）
+            receipt["preview"] = {"error": "%s: %s"
+                                  % (type(e).__name__, str(e)[:200])}
+    return json.dumps(receipt, ensure_ascii=False)
 
 
 def _screens():
@@ -63,7 +89,7 @@ def _screens():
                       ensure_ascii=False)
 
 
-def _annotate(image, ops, out=None):
+def _annotate(image, ops, out=None, preview=False):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     text(中文可标注，GDI+ 系统字体；v0.1.9 起可选 font=字体族名/bold=
     粗体开关，缺省微软雅黑+粗体；未安装字体名静默回退默认；font/bold
@@ -72,8 +98,11 @@ def _annotate(image, ops, out=None):
     矢量抗锯齿渲染（GDI+），失败自动降级纯像素画布。收据 backend=形状
     渲染后端（gdi+=矢量成功/pixel=降级或纯像素，混合 ops 时 gdi+ 仍
     成立）；pixel_ops=像素操作数量。像素 ops 恒在形状之后叠加（与 ops
-    数组顺序无关）。返回标注后 PNG 绝对路径；out 缺省写
-    <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1 根修，与 CLI 对齐）。"""
+    数组顺序无关）。preview=true（v0.1.11 实验特性）：收据升级多内容
+    块，附 1200px JPEG 缩图 ImageContent（audience:user；≤500KB 梯次
+    降档；宿主渲染行为待实测，设计文档 §7.10）。返回标注后 PNG 绝对
+    路径；out 缺省写 <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1
+    根修，与 CLI 对齐）。"""
     with open(str(image), "rb") as fh:
         png = fh.read()
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
@@ -84,8 +113,18 @@ def _annotate(image, ops, out=None):
                    if "." in os.path.basename(stem)
                    else stem + "_annotated.png")
     path = output.save(out_bytes, out=out or default_out)
-    return json.dumps({"ok": True, "path": path, "backend": backend,
-                       "pixel_ops": pixel_n}, ensure_ascii=False)
+    receipt = {"ok": True, "path": path, "backend": backend,
+               "pixel_ops": pixel_n}
+    if preview in (True, "true", "True", "1"):
+        try:
+            jpeg, info = output.preview_jpeg(out_bytes)
+            receipt["preview"] = info
+            return _content_with_image(json.dumps(receipt,
+                                                  ensure_ascii=False), jpeg)
+        except Exception as e:  # noqa: BLE001 —— 预览失败不吞主收据（审计 P2-1）
+            receipt["preview"] = {"error": "%s: %s"
+                                  % (type(e).__name__, str(e)[:200])}
+    return json.dumps(receipt, ensure_ascii=False)
 
 
 def _tool_named(name, fn):
@@ -167,9 +206,13 @@ def _serve():
             else:
                 args = (req.get("params") or {}).get("arguments") or {}
                 try:
-                    text = entry["_fn"](**args)
+                    out = entry["_fn"](**args)
+                    # v0.1.11：handler 返回 list = 预成形多内容块
+                    # （文本收据+ImageContent）；str = 旧单文本（兼容）
+                    content = (out if isinstance(out, list)
+                               else [{"type": "text", "text": out}])
                     resp = {"jsonrpc": "2.0", "id": rid, "result": {
-                        "content": [{"type": "text", "text": text}]}}
+                        "content": content}}
                 except Exception as e:  # noqa: BLE001 —— 业务失败走 isError
                     resp = {"jsonrpc": "2.0", "id": rid, "result": {
                         "isError": True, "content": [{"type": "text", "text":
