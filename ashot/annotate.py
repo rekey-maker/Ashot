@@ -4,7 +4,7 @@
 模块纪律：不 import capture（对任意既有图片可用）；渲染走纯标准库
 zlib/struct 手写 PNG（与 output 同款编码器思路），不依赖 PIL。
 
-七件原语（ops JSON 数组的 kind）：
+原语（ops JSON 数组的 kind）——形状七件：
   rect  x,y,w,h [color] [width]      矩形框
   ellipse x,y,w,h [color] [width]    椭圆框
   arrow  x1,y1,x2,y2 [color] [width] 箭头
@@ -13,6 +13,15 @@ zlib/struct 手写 PNG（与 output 同款编码器思路），不依赖 PIL。
                                      中文留 B 交互窗形态，此处诚实降级为框）
   mosaic x,y,w,h [block]             马赛克（block 像素块均值涂抹）
   blur   x,y,w,h                     模糊（3x3 均值核迭代 2 次）
+
+——v0.1.1 增补四件（ShareX 拆解引进，见设计文档 §7.5）：
+  step   x,y [color] [size]          步骤编号（同一次 ops 内自动递增 ①②…
+                                     以数字形态渲染，起步 1）
+  number x,y [value] [color] [size]  显式编号（不受递增影响）
+  spotlight x,y,w,h [dim]            聚光灯：目标区保持原样、四周压暗
+                                     （dim 缺省 0.5，乘暗系数）
+  smarterase x,y,w,h                 智能擦除：区域用边缘均值色实心填充
+                                     （比马赛克干净，适合纯色背景遮挡）
 
 颜色 #RRGGBB；缺省红 #FF3B30、宽 3。
 B 交互形态（tkinter 全屏遮罩画布）v0.2 预留：接口 annotate_interactive()
@@ -93,6 +102,13 @@ class Canvas:
             self.line(x2, y2, int(x2 + ln * math.cos(ang + da)),
                       int(y2 + ln * math.sin(ang + da)), color, width)
 
+    def circle_filled(self, cx, cy, r, color):
+        """实心圆（step/number 徽章底）。"""
+        for yy in range(cy - r, cy + r + 1):
+            for xx in range(cx - r, cx + r + 1):
+                if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
+                    self._px(xx, yy, color)
+
     def text(self, x, y, s, color=DEFAULT_COLOR, size=16):
         """首版 ASCII 8x16 点阵；非 ASCII 字符画占位框（诚实降级，
         中文文本标注留 B 交互窗形态——点阵字体不破零依赖红线）。"""
@@ -139,6 +155,47 @@ class Canvas:
                         acc = (src[i - self.w * 4] + src[i - 4] + src[i] +
                                src[i + 4] + src[i + self.w * 4])
                         self.px[i] = acc // 5
+
+    def spotlight(self, x, y, w, h, dim=0.5):
+        """聚光灯：目标区保持原样，四周压暗（dim=保留亮度系数 0~1）。"""
+        x, y = max(0, x), max(0, y)
+        w = min(w, self.w - x)
+        h = min(h, self.h - y)
+        for yy in range(self.h):
+            for xx in range(self.w):
+                if x <= xx < x + w and y <= yy < y + h:
+                    continue
+                i = (yy * self.w + xx) * 4
+                self.px[i] = int(self.px[i] * dim)
+                self.px[i + 1] = int(self.px[i + 1] * dim)
+                self.px[i + 2] = int(self.px[i + 2] * dim)
+
+    def smarterase(self, x, y, w, h):
+        """智能擦除：区域用「边缘均值色」实心填充——比马赛克干净
+        （纯色/渐变背景上等于消失）。边缘采样=区域四周 1px 环。"""
+        xs = list(range(max(0, x - 1), min(self.w, x + w + 1)))
+        ys_top = max(0, y - 1)
+        ys_bot = min(self.h - 1, y + h)
+        ring = []
+        for xx in xs:
+            for yy in (ys_top, ys_bot):
+                if 0 <= yy < self.h:
+                    i = (yy * self.w + xx) * 4
+                    ring.append(self.px[i:i + 3])
+        for yy in range(max(0, y), min(self.h, y + h)):
+            for xx in (max(0, x - 1), min(self.w - 1, x + w)):
+                if 0 <= xx < self.w:
+                    i = (yy * self.w + xx) * 4
+                    ring.append(self.px[i:i + 3])
+        if not ring:
+            return
+        n = len(ring)
+        fill = (sum(c[0] for c in ring) // n,
+                sum(c[1] for c in ring) // n,
+                sum(c[2] for c in ring) // n)
+        for yy in range(max(0, y), min(self.h, y + h)):
+            for xx in range(max(0, x), min(self.w, x + w)):
+                self._px(xx, yy, fill)
 
     # ---- 出码 ----
     def to_png(self):
@@ -217,15 +274,18 @@ def annotate_png(png_bytes, ops):
     """对 PNG 字节执行 ops（JSON 数组）-> 新 PNG 字节。
 
     op 形如 {"kind": "rect", "x": .., ..}；坐标数组形 "100,100,200,50"
-    亦可（agent 友好）。未知 kind 如实报错（绝不静默跳过）。"""
+    亦可（agent 友好）。未知 kind 如实报错（绝不静默跳过）。
+    step 编号在同一调用内自动递增（跨调用不共享状态——无全局账本）。"""
     cv = Canvas(png_bytes)
+    step_n = 0
     for op in ops:
         if isinstance(op, str):
             op = json.loads(op)
         kind = op.get("kind")
         color = _color(op.get("color"))
         width = int(op.get("width", DEFAULT_WIDTH))
-        n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur")
+        n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
+                                         "spotlight", "smarterase")
                   else "xyxy")
         if kind == "rect":
             cv.rect(*n, color, width)
@@ -243,6 +303,26 @@ def annotate_png(png_bytes, ops):
             cv.mosaic(*n, block=int(op.get("block", 12)))
         elif kind == "blur":
             cv.blur(*n)
+        elif kind == "step":
+            step_n += 1
+            size = int(op.get("size", 16))
+            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
+                             size, color)
+            cv.text(int(op.get("x", 0)) + size // 4,
+                    int(op.get("y", 0)) + size // 4, str(step_n),
+                    (255, 255, 255), size)
+        elif kind == "number":
+            size = int(op.get("size", 16))
+            value = str(op.get("value", op.get("n", "1")))
+            cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
+                             size, color)
+            cv.text(int(op.get("x", 0)) + size // 4,
+                    int(op.get("y", 0)) + size // 4, value,
+                    (255, 255, 255), size)
+        elif kind == "spotlight":
+            cv.spotlight(*n, dim=float(op.get("dim", 0.5)))
+        elif kind == "smarterase":
+            cv.smarterase(*n)
         else:
             raise ValueError("未知标注 kind：%r" % kind)
     return cv.to_png()

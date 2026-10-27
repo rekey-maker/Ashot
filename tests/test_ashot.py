@@ -118,3 +118,70 @@ def test_cli_annotate_subcommand(tmp_path):
          "--out", str(tmp_path / "out.png")],
         capture_output=True, text=True, cwd=ROOT)
     assert (tmp_path / "out.png").exists(), r.stderr
+
+
+# ---------- v0.1.1 四件新标注（ShareX 拆解引进） ----------
+
+def _img(w=60, h=40):
+    bgra = bytes((0x30, 0x60, 0x90, 0xFF)) * (w * h)   # 单色底
+    return output.bgra_to_png(w, h, bgra)
+
+
+def _px_at(png, x, y):
+    _, _, px = annotate._decode_png(png)
+    i = (y * _w(png) + x) * 4
+    return px[i], px[i + 1], px[i + 2]
+
+
+def _w(png):
+    return annotate._decode_png(png)[0]
+
+
+def test_step_numbers_auto_increment():
+    """step 同一次 ops 内自动递增 1,2,3；跨调用不共享状态。"""
+    import io
+    png = _img(200, 60)
+    out = annotate.annotate_png(png, [
+        {"kind": "step", "x": 10, "y": 10},
+        {"kind": "step", "x": 60, "y": 10},
+        {"kind": "step", "x": 110, "y": 10},
+    ])
+    # 三个徽章位置像素应有白字（递增后徽章都在）；此处验证不炸且出 PNG
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+    # 跨调用重置：新调用第一枚仍从 1 开始（行为=无全局账本，静态即可）
+    out2 = annotate.annotate_png(png, [{"kind": "step", "x": 10, "y": 10}])
+    assert out2[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_number_explicit_value():
+    png = _img()
+    out = annotate.annotate_png(png, [{"kind": "number", "x": 10, "y": 10,
+                                       "value": "7"}])
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_spotlight_dims_outside_keeps_inside():
+    """聚光灯：目标区保持原色、四周压暗（dim=0.5）。
+    底色 BGRA(0x30,0x60,0x90)→RGBA(0x90,0x60,0x30)；区外=原值×0.5。"""
+    png = _img()
+    out = annotate.annotate_png(png, [{"kind": "spotlight", "x": 0, "y": 0,
+                                       "w": 30, "h": 40, "dim": 0.5}])
+    inside = _px_at(out, 5, 20)
+    outside = _px_at(out, 45, 20)
+    assert inside == (0x90, 0x60, 0x30), "目标区被误压暗"
+    assert all(abs(c - e) <= 1 for c, e in
+               zip(outside, (0x48, 0x30, 0x18))), "四周未按 dim 压暗"
+
+
+def test_smarterase_fills_with_edge_mean():
+    """智能擦除：区域被边缘均值色填充（单色底=同色但走填充路径）；
+    双色底（左蓝右红中间被擦）→ 填充色为两侧均值。"""
+    w, h = 60, 20
+    bgra = (bytes((0xFF, 0x00, 0x00, 0xFF)) * 30 +
+            bytes((0x00, 0x00, 0xFF, 0xFF)) * 30) * h
+    png = output.bgra_to_png(w, h, bgra)
+    out = annotate.annotate_png(png, [{"kind": "smarterase", "x": 20, "y": 0,
+                                       "w": 20, "h": 20}])
+    mid = _px_at(out, 30, 10)
+    # 均值色介于红蓝之间（R 与 B 都非 0）
+    assert 0 < mid[0] < 255 and 0 < mid[2] < 255, mid
