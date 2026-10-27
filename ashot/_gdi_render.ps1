@@ -43,7 +43,7 @@ foreach ($s in $spec.shapes) {
         $g.FillEllipse($brush, [float]($s.cx - $s.r), [float]($s.cy - $s.r),
                        [float](2 * $s.r), [float](2 * $s.r))
         $wfont = New-Object System.Drawing.Font(
-            'Microsoft YaHei UI', [float]($s.r * 1.15),
+            [string]$s.font, [float]($s.r * 1.15),
             [System.Drawing.FontStyle]::Bold,
             [System.Drawing.GraphicsUnit]::Pixel)
         $wb = [System.Drawing.Brushes]::White

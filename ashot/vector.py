@@ -125,6 +125,15 @@ def _fat_arrow_poly(x1, y1, x2, y2, width):
     return poly
 
 
+def _as_bool(v):
+    """bold 字段保真：字符串形态（"false"/"0"/"no"/"off"/""）按假值
+    处理——bool("false") 是 truthy，MCP 面手写 JSON 的常见输入
+    （审计 P3-1）。"""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(v)
+
+
 def compile_ops(ops):
     """JSON ops -> {"shapes": [...], "pixel_ops": [...]}。
     未知 kind 如实抛错（绝不静默跳过，与像素版契约一致）。"""
@@ -175,7 +184,9 @@ def compile_ops(ops):
             else:
                 label = str(op.get("value", op.get("n", "1")))
             shapes.append({"t": "dot", "cx": cx, "cy": cy, "r": sz,
-                           "color": color, "label": label})
+                           "color": color, "label": label,
+                           "font": DEFAULT_FONT})   # v0.1.10 单源化：dot 字体
+            # 不再于 ps1 硬编码（审计 P3-2 漂移隐患）
         elif kind == "text":
             shapes.append({"t": "text",
                            "x": float(op.get("x", 0)),
@@ -184,7 +195,7 @@ def compile_ops(ops):
                            "size": float(op.get("size", 16)),
                            "color": color,
                            "font": str(op.get("font", DEFAULT_FONT)),
-                           "bold": bool(op.get("bold", True))})
+                           "bold": _as_bool(op.get("bold", True))})
         else:
             raise ValueError("未知标注 kind：%r" % kind)
     return {"shapes": shapes, "pixel_ops": pixel_ops}

@@ -2,6 +2,30 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.1.10] - 2026-10-28
+
+### 新增
+- **字库查询**：CLI `fonts [filter]` 子命令 + MCP 第四工具
+  `ashot_fonts(filter?)`（收据 `{ok, count, families}`）。数据源与
+  渲染器**同源**（.NET InstalledFontCollection）——查出的族名保证
+  text op 的 font 可解析（未装名静默回退的反馈回路就此闭合）
+- **locale 实测注记**：`FontFamily.Name` 是 OS UI locale 敏感的
+  （zh-CN 上楷体/KaiTi、微软雅黑/Microsoft YaHei 双名并存）——枚举
+  **双名**（1033 英文规范名 + 本地 Name），输出英文规范名（跨机稳定），
+  过滤双语命中（"kai"/"楷体" 都能查到 KaiTi）；MCP 进程内缓存；
+  **新 MCP 工具需宿主重连后才出现在工具表**
+
+### 测试
+- 47→49：字库列表/双名过滤/CLI 子进程接线；mcp schema 锁更新（四工具）
+
+### 修复（审查收口批）
+- text `bold` 字符串形态保真：`"bold":"false"` / `"0"` 等不再被
+  `bool()` 当真值渲染粗体
+- step/number 徽章字体单源化（ps1 不再硬编码微软雅黑字面量）
+- CLI stdout/stderr 显式 utf-8（管道重定向下非 GBK 族名不截断）
+- 字库测试显式 `cwd=ROOT`（任意 cwd 跑 pytest 不假红）+ 族名去重/
+  无 BOM 锁
+
 ## [0.1.9] - 2026-10-28
 
 ### 新增

@@ -29,7 +29,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
   **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
-  未安装字体名 GDI+ 静默回退默认字体）/mosaic/blur/
+  未安装字体名 GDI+ 静默回退默认字体——**先 `fonts <子串>` 核名再写
+  font**）/mosaic/blur/
   step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
   smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
@@ -51,13 +52,17 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   "color":"#FF3B30"},
   {"kind":"text","x":20,"y":80,"text":"这里有问题","size":28,
   "color":"#FFFFFF"}]'`
+- `fonts [filter]`（v0.1.10）——列出已装字体族（英文规范名，双语过滤：
+  "kai"/"楷体" 都能查到 KaiTi）；族名走 stdout、计数走 stderr。
 - `screens`——列出显示器。
 
 ## MCP（ashot 域名，宿主注册后可用）
 `ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带
 `all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」）、
 `ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
-覆盖原图**）、`ashot_screens`——与 CLI 同能力。
+覆盖原图**）、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
+{ok, count, families}；**新增工具需宿主重连后才出现在工具表**）——
+与 CLI 同能力。
 
 **部署纪律（2026-10-28 实弹）**：改了 Ashot 代码后，宿主重启未必真换
 MCP 进程（进程会赖着旧代码，如 screens 返回 0×0 假象）——杀掉

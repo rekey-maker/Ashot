@@ -417,10 +417,13 @@ def test_mcp_tool_schemas():
     """P3 死代码清理后 schema 生成仍自洽：required 推导 + 属性集合。"""
     from ashot import mcp as mcp_mod
     assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
-                                  "ashot_annotate"}
+                                  "ashot_annotate", "ashot_fonts"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out"}
+    fc = mcp_mod.TOOLS["ashot_fonts"]["inputSchema"]
+    assert fc["required"] == []
+    assert set(fc["properties"]) == {"filter"}
 
 
 # ---------- v0.1.6 渐变实心箭头 + 圆角矩形 ----------
@@ -742,3 +745,35 @@ def test_text_font_pixel_path_ignores():
     white = sum(1 for i in range(0, len(px), 4)
                 if px[i] > 0xD0 and px[i + 1] > 0xD0 and px[i + 2] > 0xD0)
     assert white > 10, "像素路 ASCII 文字未出墨（%d）" % white
+
+
+# ---------- v0.1.10 字库查询 ----------
+
+def test_fonts_list_and_filter():
+    """字库查询：列表非空且含渲染器缺省族、已排序；过滤不区分大小写
+    （数据源与渲染器同源，§7.9.2）。"""
+    from ashot import fonts
+    names = fonts.list_families()
+    assert len(names) > 10, len(names)
+    assert names == sorted(names), "未排序"
+    assert len(set(names)) == len(names), "存在重复族名"
+    assert not names[0].startswith("\ufeff"), "首元素带 BOM"
+    assert "Microsoft YaHei UI" in names, "渲染器缺省族不在字库"
+    hits = fonts.list_families("kai")
+    assert "KaiTi" in hits, hits
+    assert all("kai" in n.lower() for n in hits)
+    # locale 注记：zh 系统上本地化名也能查到（双名索引，§7.9.2）
+    assert "KaiTi" in fonts.list_families("楷体")
+    assert fonts.list_families("NoSuchFontZZZ") == []
+
+
+def test_fonts_cli_subcommand():
+    """CLI fonts 子命令子进程实跑：过滤命中 + 计数走 stderr。"""
+    import subprocess
+    import sys
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "fonts", "kai"],
+                       capture_output=True, timeout=60, cwd=ROOT)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    out = r.stdout.decode("utf-8", "replace")
+    assert "KaiTi" in out, out
+    assert "total: " in r.stderr.decode("utf-8", "replace")

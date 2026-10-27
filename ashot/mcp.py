@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, annotate_gdi, capture, output  # noqa: E402
+from ashot import __version__, annotate, annotate_gdi, capture, fonts, output  # noqa: E402
 
 TOOLS = {}
 
@@ -96,9 +96,21 @@ def _tool_named(name, fn):
     TOOLS[name] = entry
 
 
+def _fonts(filter=None):
+    """列出系统已装字体族名（v0.1.10）。数据源与渲染器同源
+    （.NET InstalledFontCollection）——查出的名字保证 text op 的 font
+    字段可解析（未装名会静默回退默认字体，先查后用）。filter=不区分
+    大小写子串过滤。收据 {ok, count, families:[...]}。本工具需宿主
+    重连后才会出现在工具表。"""
+    names = fonts.list_families(filter)
+    return json.dumps({"ok": True, "count": len(names),
+                       "families": names}, ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
+_tool_named("ashot_fonts", _fonts)
 
 _stop = False
 

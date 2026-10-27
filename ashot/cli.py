@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from . import __version__, annotate, annotate_gdi, capture, output
+from . import __version__, annotate, annotate_gdi, capture, fonts, output
 
 
 def _cmd_shot(a):
@@ -55,6 +55,18 @@ def _cmd_annotate(a):
         return 1
 
 
+def _cmd_fonts(a):
+    try:
+        names = fonts.list_families(a.filter)
+        for n in names:
+            print(n)
+        print("total: %d" % len(names), file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_screens(_a):
     for sc in capture.list_screens():
         print("#%(index)d %(w)dx%(h)d offset=(%(left)d,%(top)d)%(primary)s"
@@ -63,6 +75,13 @@ def _cmd_screens(_a):
 
 
 def main(argv=None):
+    # 管道重定向下 print 走 locale 编码（cp936），非 GBK 族名会截断输出
+    # ——显式锁 utf-8（审计 P3-3，与 mcp._serve 同款）
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:  # noqa: BLE001 —— 老版本无 reconfigure 不致命
+            pass
     ap = argparse.ArgumentParser(
         prog="ashot", description="Ashot —— agent 友好的桌面截图与标注工具")
     ap.add_argument("--version", action="version",
@@ -95,6 +114,11 @@ def main(argv=None):
 
     s = sub.add_parser("screens", help="列出显示器")
     s.set_defaults(func=_cmd_screens)
+
+    f = sub.add_parser("fonts", help="列出已装字体族（text 的 font 先查后用）")
+    f.add_argument("filter", nargs="?", default=None,
+                   help="不区分大小写子串过滤，如 kai / yahei")
+    f.set_defaults(func=_cmd_fonts)
 
     a = ap.parse_args(argv)
     return a.func(a)
