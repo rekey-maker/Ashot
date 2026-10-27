@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import annotate, output  # noqa: E402
+from ashot import __version__, annotate, output  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -105,7 +105,7 @@ def test_gc_keep_skips(tmp_path):
 def test_cli_version():
     r = subprocess.run([sys.executable, "-m", "ashot.cli", "--version"],
                        capture_output=True, text=True, cwd=ROOT)
-    assert "0.1.0" in r.stdout
+    assert __version__ in r.stdout   # 版本烙印对：跟 __init__ 走，不硬编码
 
 
 def test_cli_annotate_subcommand(tmp_path):
