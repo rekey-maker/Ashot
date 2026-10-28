@@ -59,22 +59,40 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   场景 out_dir 传会话可视化目录）；html 路径 stdout、preview 信息
   stderr。
 - `cdp-tabs --port P` / `cdp-shot [--port P] [--index N] [--viewport]`
-  （v0.2.0）——**CDP 浏览器捕获**：无头/有头通吃、与 AI 宿主无关
+  （v0.2.0；v0.2.5 收据升级）——**CDP 浏览器捕获**：无头/有头通吃、与 AI 宿主无关
   （任何宿主启动的 Chromium 系，含 --remote-debugging 启动的无头
   浏览器）；--port 缺省自动发现（进程枚举→DevToolsActivePort→常见
-  端口）；cdp-shot 缺省 captureBeyondViewport 全页。Chrome 136+ 默认
+  端口；**多实例时输入类命令不猜，报错列实例让人挑**）；cdp-shot 缺省
+  captureBeyondViewport 全页，收据带 w/h（出图像素）/vw/vh/dpr/
+  **to_css**（截图像素 × to_css = 点击 CSS 坐标；获取失败亮
+  layout_error 不吞主收据）。Chrome 136+ 默认
   profile 拒远程调试——浏览器须用非默认 --user-data-dir 启动。
-- **CDP 输入注入**（v0.2.1/0.2.3）：`cdp-key <键> [--modifiers ctrl+shift]
+- **CDP 输入注入**（v0.2.1/0.2.3/0.2.5）：`cdp-key <键> [--modifiers ctrl+shift]
   [--text T]`（回车/Tab/方向键/F1-F12/符号/任意字符/组合快捷键，
   rawKeyDown+char 双发；未知键收据 unresolved_keys 亮牌）、
-  `cdp-wheel --dx --dy`（滚轮）、`cdp-click x y [--button]`（单击，
-  left/right/middle）、`cdp-dblclick x y [--count]`（双击/三连击）、
-  `cdp-drag x1 y1 x2 y2 [--steps]`（拖拽）、`cdp-type <文本> [--x --y]`
-  （**填表整段输入**，Input.insertText 粘贴式含中文，不逐键击）——
+  `cdp-wheel --dx --dy`（滚轮）、`cdp-click x y [--button] [--no-timing]
+  [--verify JS]`（单击，left/right/middle）、`cdp-dblclick x y [--count]`
+  （双击/三连击）、`cdp-drag x1 y1 x2 y2 [--steps] [--pace
+  fast|normal|captcha] [--total-ms N] [--free] [--verify JS]`（拖拽：
+  缺省**受轨道约束**+节奏化+末端过冲回退；**拖滑块用
+  `--pace captcha`**≈900~2600ms；`--free` 画图框选走自由弧线）、
+  `cdp-type <文本> [--x --y] [--verify JS]`（**填表整段输入**，
+  Input.insertText 粘贴式含中文，不逐键击）——
   全部 --port/--index/--ws 同 cdp-shot。注入的是 CDP isTrusted 事件
   （页面无法区分），**只进指定标签页、不占用户物理键鼠**（自动化与
   用户操作天然隔离）；insertText 落点=目标标签页当前焦点元素
-  （--x/--y 先点击聚焦）。
+  （--x/--y 先点击聚焦）。**verify**：dispatched 只代表事件发出，不代表
+  生效——给一段 JS（如 "return document.activeElement.value"），操作后
+  求值结果进收据。
+- `cdp-eval '<js>'`（v0.2.5）——标签页内执行 JS 并取值（函数体自动包
+  IIFE；纯表达式直发）。算坐标、读页面状态确认操作生效、拿 dpr。
+  **只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点）。
+- `cdp-view`（v0.2.5）——视口信息 vw/vh（CSS 像素）/dpr/整页尺寸。
+  **坐标换算铁律**：截图出图是物理像素（=CSS×dpr），直接拿截图坐标
+  去点击必然落空；`cdp-shot` 收据的 `to_css`（=1/dpr）× 截图像素 =
+  点击用 CSS 坐标。
+- **多实例纪律**（v0.2.5）：本机有多个 CDP 浏览器时，输入类命令不猜
+  端口——报错并列出各实例页签，**必须显式 `--port`**。
 - `screens`——列出显示器（非 Windows 平台如实报「批2」）。
 
 ## MCP（ashot 域名，宿主注册后可用）
