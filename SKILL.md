@@ -58,7 +58,13 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （v0.1.12）——图片→数据 URL 内嵌 HTML（用户可见展示，::visualize
   场景 out_dir 传会话可视化目录）；html 路径 stdout、preview 信息
   stderr。
-- `screens`——列出显示器。
+- `cdp-tabs --port P` / `cdp-shot [--port P] [--index N] [--viewport]`
+  （v0.2.0）——**CDP 浏览器捕获**：无头/有头通吃、与 AI 宿主无关
+  （任何宿主启动的 Chromium 系，含 --remote-debugging 启动的无头
+  浏览器）；--port 缺省自动发现（进程枚举→DevToolsActivePort→常见
+  端口）；cdp-shot 缺省 captureBeyondViewport 全页。Chrome 136+ 默认
+  profile 拒远程调试——浏览器须用非默认 --user-data-dir 启动。
+- `screens`——列出显示器（非 Windows 平台如实报「批2」）。
 
 ## MCP（ashot 域名，宿主注册后可用）
 `ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带

@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, annotate_gdi, capture, fonts, output, show  # noqa: E402
+from ashot import __version__, annotate, annotate_gdi, capture, cdp, fonts, output, show  # noqa: E402
 
 TOOLS = {}
 
@@ -160,11 +160,47 @@ def _show(image, title, out_dir, caption=None, width=1200):
                       ensure_ascii=False)
 
 
+def _cdp_tabs(port=None):
+    """列 CDP 浏览器（Chromium 家族）的 page 标签页（v0.2.0）。port=
+    调试端口（缺省=discover：进程命令行→DevToolsActivePort→常见端口，
+    审计 P1-2）。无头/有头通吃、与 AI 宿主无关。收据 {ok, port,
+    tabs:[{title,url,id}]}。本工具需宿主重连后才会出现在工具表。"""
+    if port in (None, "", 0):
+        disc = cdp.discover()
+        if not disc["ports"]:
+            raise RuntimeError(disc["hint"])
+        port = disc["ports"][0]
+    return json.dumps({"ok": True, "port": int(port),
+                       "tabs": cdp.tabs(int(port))}, ensure_ascii=False)
+
+
+def _cdp_shot(port=None, index=0, fullpage=True, out=None):
+    """CDP 浏览器标签页截图（v0.2.0）：Page.captureScreenshot，
+    无头/有头通吃、与 AI 宿主无关（设计文档 v0.2.0 §4.2）。port 缺省
+    =discover；index=第几个 page 标签；fullpage=captureBeyondViewport
+    （Chrome 90+，视口外也截）。Chrome 136+ 默认 profile 拒远程调试
+    （default_profile_denied）——用非默认 --user-data-dir 启动。返回
+    截图 PNG 路径；本工具需宿主重连后才会出现在工具表。"""
+    if port in (None, "", 0):
+        disc = cdp.discover()
+        if not disc["ports"]:
+            raise RuntimeError(disc["hint"])
+        port = disc["ports"][0]
+    png, info = cdp.shot(int(port), index=int(index or 0),
+                         fullpage=fullpage not in (False, "false", "False",
+                                                   "0"))
+    path = output.save(png, out=out)
+    return json.dumps({"ok": True, "path": path, "port": int(port),
+                       "fullpage": info["fullpage"]}, ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
 _tool_named("ashot_fonts", _fonts)
 _tool_named("ashot_show", _show)
+_tool_named("ashot_cdp_tabs", _cdp_tabs)
+_tool_named("ashot_cdp_shot", _cdp_shot)
 
 _stop = False
 

@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Ashot.cli —— 命令行入口（shot / annotate / screens / fonts / show）。"""
+"""Ashot.cli —— 命令行入口（shot / annotate / screens / fonts / show /
+cdp-tabs / cdp-shot）。"""
 import argparse
 import json
 import os
 import sys
 
-from . import __version__, annotate, annotate_gdi, capture, fonts, output, show
+from . import __version__, annotate, annotate_gdi, capture, cdp, fonts, output, show
 
 
 def _cmd_shot(a):
@@ -83,11 +84,53 @@ def _cmd_show(a):
         return 1
 
 
+def _cmd_cdp_tabs(a):
+    try:
+        port = a.port
+        if port is None:
+            disc = cdp.discover()
+            if not disc["ports"]:
+                print("✗ %s" % disc["hint"], file=sys.stderr)
+                return 1
+            port = disc["ports"][0]
+            print("discovered port: %d" % port, file=sys.stderr)
+        for t in cdp.tabs(port):
+            print("%s\t%s\t%s" % (t["id"][:8], t["title"], t["url"]))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_shot(a):
+    try:
+        port = a.port
+        if port is None:
+            disc = cdp.discover()
+            if not disc["ports"]:
+                print("✗ %s" % disc["hint"], file=sys.stderr)
+                return 1
+            port = disc["ports"][0]
+            print("discovered port: %d" % port, file=sys.stderr)
+        png, info = cdp.shot(port, index=a.index, fullpage=not a.viewport)
+        path = output.save(png, out=a.out)
+        print(path)
+        print("fullpage: %s" % info["fullpage"], file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_screens(_a):
-    for sc in capture.list_screens():
-        print("#%(index)d %(w)dx%(h)d offset=(%(left)d,%(top)d)%(primary)s"
-              % {**sc, "primary": " [主屏]" if sc["primary"] else ""})
-    return 0
+    try:
+        for sc in capture.list_screens():
+            print("#%(index)d %(w)dx%(h)d offset=(%(left)d,%(top)d)%(primary)s"
+                  % {**sc, "primary": " [主屏]" if sc["primary"] else ""})
+        return 0
+    except Exception as e:  # noqa: BLE001 —— 非 Win 平台如实报（审计 P2-2）
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
 
 
 def main(argv=None):
@@ -144,6 +187,20 @@ def main(argv=None):
                    help="输出目录（缺省=当前目录；::visualize 场景传会话可视化目录）")
     w.add_argument("--width", type=int, default=1200, help="缩图宽度（不放大）")
     w.set_defaults(func=_cmd_show)
+
+    ct = sub.add_parser("cdp-tabs", help="列 CDP 浏览器的 page 标签页（v0.2.0）")
+    ct.add_argument("--port", type=int, default=None,
+                    help="调试端口（缺省=discover 自动发现）")
+    ct.set_defaults(func=_cmd_cdp_tabs)
+
+    cs = sub.add_parser("cdp-shot", help="CDP 浏览器标签页截图（无头/有头通吃，v0.2.0）")
+    cs.add_argument("--port", type=int, default=None,
+                    help="调试端口（缺省=discover 自动发现）")
+    cs.add_argument("--index", type=int, default=0, help="第几个 page 标签")
+    cs.add_argument("--viewport", action="store_true",
+                    help="只抓视口（缺省 captureBeyondViewport 全页）")
+    cs.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
+    cs.set_defaults(func=_cmd_cdp_shot)
 
     a = ap.parse_args(argv)
     return a.func(a)

@@ -17,11 +17,14 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `smarterase`（边缘均值色填充）
   - 每个 op 独立 `color`（#RRGGBB）与 `width`（粗细）
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
+- **浏览器捕获**（v0.2.0）：纯标准库 CDP 客户端——`cdp-tabs`/
+  `cdp-shot` 抓任何 Chromium 系浏览器的标签页（**无头/有头通吃，与
+  AI 宿主无关**），captureBeyondViewport 全页，自动发现调试端口
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，五工具 `ashot_shot` / `ashot_annotate` /
+- **MCP**：stdio JSON-RPC 2.0，七工具 `ashot_shot` / `ashot_annotate` /
   `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
-  起），与 CLI 同能力
+  起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0 起），与 CLI 同能力
 
 ## 用法
 

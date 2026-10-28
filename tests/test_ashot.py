@@ -419,7 +419,8 @@ def test_mcp_tool_schemas():
     from ashot import mcp as mcp_mod
     assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
                                   "ashot_annotate", "ashot_fonts",
-                                  "ashot_show"}
+                                  "ashot_show", "ashot_cdp_tabs",
+                                  "ashot_cdp_shot"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
@@ -434,6 +435,12 @@ def test_mcp_tool_schemas():
     assert wc["required"] == ["image", "title", "out_dir"]
     assert set(wc["properties"]) == {"image", "title", "out_dir",
                                      "caption", "width"}
+    ct = mcp_mod.TOOLS["ashot_cdp_tabs"]["inputSchema"]
+    assert ct["required"] == []
+    assert set(ct["properties"]) == {"port"}
+    cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
+    assert cs["required"] == []
+    assert set(cs["properties"]) == {"port", "index", "fullpage", "out"}
 
 
 # ---------- v0.1.6 渐变实心箭头 + 圆角矩形 ----------
@@ -916,3 +923,223 @@ def test_show_cli_subcommand(tmp_path):
     out = r.stdout.decode("utf-8", "replace")
     assert os.path.isfile(out.strip().splitlines()[0])
     assert "preview: " in r.stderr.decode("utf-8", "replace")
+
+
+# ---------- v0.2.0 批1 CDP（纯 stdlib WebSocket + CDP 客户端） ----------
+
+class _FakeWsServer:
+    """最小 WS 服务端桩：握手应答 + 收一帧回 N 帧响应（可分片/ping）。
+    纯 stdlib socket，单测用（审计：批1 无浏览器环境全单测不触网）。"""
+    import hashlib as _hashlib
+    GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    def __init__(self, responses):
+        import socket as _socket
+        self._srv = _socket.socket()
+        self._srv.setsockopt(_socket.SOL_SOCKET,
+                             _socket.SO_REUSEADDR, 1)
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(1)
+        self.port = self._srv.getsockname()[1]
+        self._responses = list(responses)   # [(opcode, payload, fin)]
+
+    def handshake_key(self, key):
+        import hashlib
+        import base64
+        return base64.b64encode(
+            hashlib.sha1((key + self.GUID).encode()).digest()).decode()
+
+    def serve_once(self):
+        import threading
+        t = threading.Thread(target=self._serve, daemon=True)
+        t.start()
+        return t
+
+    def _serve(self):
+        import struct
+        conn, _ = self._srv.accept()
+        try:
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                buf += conn.recv(4096)
+            head, _, rest = buf.partition(b"\r\n\r\n")
+            key = ""
+            for ln in head.split(b"\r\n"):
+                if ln.lower().startswith(b"sec-websocket-key:"):
+                    key = ln.split(b":", 1)[1].strip().decode()
+            conn.sendall(("HTTP/1.1 101 Switching Protocols\r\n"
+                          "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                          "Sec-WebSocket-Accept: %s\r\n\r\n"
+                          % self.handshake_key(key)).encode())
+            # 读客户端一帧（带掩码；客户端消息短，单帧必达）
+            data = rest
+            while len(data) < 2:
+                data += conn.recv(4096)
+            h, data = data[:2], data[2:]
+            ln = h[1] & 0x7F
+            if ln == 126:
+                while len(data) < 2:
+                    data += conn.recv(4096)
+                ln = struct.unpack(">H", data[:2])[0]
+                data = data[2:]
+            elif ln == 127:
+                while len(data) < 8:
+                    data += conn.recv(4096)
+                ln = struct.unpack(">Q", data[:8])[0]
+                data = data[8:]
+            need = 4 + ln
+            while len(data) < need:
+                data += conn.recv(4096)
+            # 客户端命令帧已完整收到，逐条回响应
+            for opcode, body, fin in self._responses:
+                out = bytes([(0x80 if fin else 0x00) | opcode, len(body)])
+                conn.sendall(out + body)
+            import time
+            time.sleep(0.1)   # 给客户端留收帧窗口，避免 RST 掐连接
+        finally:
+            conn.close()
+            self._srv.close()
+
+
+def test_ws_frame_roundtrip_and_fragmentation():
+    """WS 客户端核心（审计 P2-11）：握手、masked 发送、**分片重组**
+    （text 三片 + 中途 ping 回 pong）、消息级 call 往返。"""
+    from ashot import cdp as cdp_mod
+    reply = json.dumps({"id": 1, "result": {"ok": True}}).encode()
+    # 片1（无FIN）+ 片2（无FIN）+ ping（FIN）+ 片3（FIN=continuation 语义
+    # 由 opcode 0 表达）
+    half1, half2, half3 = reply[:5], reply[5:9], reply[9:]
+    srv = _FakeWsServer([(0x1, half1, False), (0x0, half2, False),
+                         (0x9, b"hb", True), (0x0, half3, True)])
+    thread = srv.serve_once()
+    res = cdp_mod.call("ws://127.0.0.1:%d/devtools/page/x" % srv.port,
+                       "Page.captureScreenshot")
+    thread.join(timeout=5)
+    assert res == {"ok": True}
+
+
+def test_ws_coalesced_and_single_frame():
+    """合包共存（审计 P1-1 实锤场景）：握手 rest 携带事件帧+应答帧同段
+    ——buf 线穿修复前必丢应答；另补「单帧 FIN=1 应答」纯路径单测
+    （最常见实弹路，审计 P3-12a）。"""
+    from ashot import cdp as cdp_mod
+
+    class _Stub:
+        """伪服务端：握手后把「事件帧+应答帧」一次性塞进 101 响应体
+        （合法合包），之后 socket 不再发任何数据。"""
+        import hashlib as _h
+        GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+        def __init__(self, early_frames):
+            import socket
+            self._srv = socket.socket()
+            self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._srv.bind(("127.0.0.1", 0))
+            self._srv.listen(1)
+            self.port = self._srv.getsockname()[1]
+            self._early = early_frames   # [(opcode, payload, fin)]
+
+        def _serve(self):
+            import struct
+            conn, _ = self._srv.accept()
+            try:
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    buf += conn.recv(4096)
+                head, _, rest = buf.partition(b"\r\n\r\n")
+                key = ""
+                for ln in head.split(b"\r\n"):
+                    if ln.lower().startswith(b"sec-websocket-key:"):
+                        key = ln.split(b":", 1)[1].strip().decode()
+                accept = base64.b64encode(
+                    __import__("hashlib").sha1(
+                        (key + self.GUID).encode()).digest()).decode()
+                early = b""
+                for opcode, body, fin in self._early:
+                    early += bytes([(0x80 if fin else 0x00) | opcode,
+                                    len(body)]) + body
+                conn.sendall(("HTTP/1.1 101 Switching Protocols\r\n"
+                              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                              "Sec-WebSocket-Accept: %s\r\n\r\n"
+                              % accept).encode() + early)
+                import time
+                time.sleep(0.1)
+            finally:
+                conn.close()
+                self._srv.close()
+
+        def serve(self):
+            import threading
+            threading.Thread(target=self._serve, daemon=True).start()
+
+    reply = json.dumps({"id": 1, "result": {"v": 42}}).encode()
+    event = json.dumps({"method": "Page.loadEventFired"}).encode()
+    # 合包：101 响应体里直接带 事件帧(首片无FIN + continuation片FIN) +
+    # 应答帧(FIN 单帧)
+    stub = _Stub([(0x1, event[:3], False), (0x0, event[3:], True),
+                  (0x1, reply, True)])
+    stub.serve()
+    res = cdp_mod.call("ws://127.0.0.1:%d/devtools/page/y" % stub.port,
+                       "Page.captureScreenshot")
+    assert res == {"v": 42}
+
+
+def test_ws_frame_encoding_units():
+    """_send_frame 长度三态：三档 payload 过 _send_frame 编码头 + 掩码
+    后的总长 == 2+len(header_ext)+4+n（发侧规格反向验证）。"""
+    from ashot import cdp as cdp_mod
+    import struct
+
+    class _Sink:
+        def __init__(self):
+            self.sent = b""
+
+        def sendall(self, data):
+            self.sent += data
+    for n in (125, 126, 70000):
+        sink = _Sink()
+        cdp_mod._send_frame(sink, 0x1, b"a" * n)
+        first, second = sink.sent[0], sink.sent[1]
+        assert first == 0x81  # FIN + text
+        ln7 = second & 0x7F
+        masked = bool(second & 0x80)
+        assert masked  # 客户端帧必须 mask（审计 P2-11）
+        if n == 125:
+            assert ln7 == 125 and len(sink.sent) == 2 + 4 + n
+        elif n == 126:
+            assert ln7 == 126
+            assert struct.unpack(">H", sink.sent[2:4])[0] == 126
+            assert len(sink.sent) == 4 + 4 + n
+        else:
+            assert ln7 == 127
+            assert struct.unpack(">Q", sink.sent[2:10])[0] == 70000
+            assert len(sink.sent) == 10 + 4 + n
+
+
+def test_cdp_discover_no_browser():
+    """无浏览器环境 discover 如实报（返回空 ports + hint，不抛）——
+    审计 P2-13d：无浏览器 CI 环境全单测不触网。"""
+    from ashot import cdp as cdp_mod
+    res = cdp_mod.discover()
+    # 本机可能真有调试浏览器——不假设空，但结构必须正确
+    assert isinstance(res, dict) and "ports" in res and "hint" in res
+    assert isinstance(res["ports"], list)
+
+
+def test_cdp_find_port_from_profile(tmp_path):
+    """DevToolsActivePort 解析：正常/缺失/坏内容三态。"""
+    from ashot import cdp as cdp_mod
+    (tmp_path / "DevToolsActivePort").write_text("9333\n/devtools/browser/x\n")
+    assert cdp_mod.find_port_from_profile(str(tmp_path)) == 9333
+    try:
+        cdp_mod.find_port_from_profile(str(tmp_path / "nope"))
+        raise AssertionError("缺失未报错")
+    except RuntimeError:
+        pass
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "DevToolsActivePort").write_text("junk\n")
+    try:
+        cdp_mod.find_port_from_profile(str(tmp_path / "bad"))
+        raise AssertionError("坏内容未报错")
+    except RuntimeError:
+        pass

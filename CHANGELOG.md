@@ -2,6 +2,33 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.0] - 2026-10-28
+
+### 新增（v0.2.0 批1：CDP 浏览器捕获，跨平台）
+- **CDP 浏览器截图**：纯标准库 CDP 客户端（裸 WebSocket：握手/客户端
+  帧强制掩码/长度三态/**收侧分片重组**/ping-pong/close 回礼/半包
+  recv/帧上限/只连 127.0.0.1）——`cdp-tabs` / `cdp-shot` CLI 子命令
+  + MCP 第六七工具 `ashot_cdp_tabs` / `ashot_cdp_shot`（需宿主重连）。
+  **无头/有头通吃、与 AI 宿主无关**（Workbuddy/Codex/DeepSeek 等启动
+  的 Chromium 系浏览器均可抓）；`captureBeyondViewport` 全页截图
+  （Chrome 90+）
+- **浏览器自动发现**（四级）：进程命令行提取 --remote-debugging-port/
+  --user-data-dir → DevToolsActivePort → 扫 9222-9229 → 如实报；
+  Chrome 136+ 默认 profile 拒远程调试——收据 `default_profile_denied`
+  亮牌，用非默认 --user-data-dir
+- **Mac 前置（审计 P1-1）**：capture.py 顶层 windll 加平台守卫——
+  Mac 上 import 链全通，cdp 命令 Mac 可用（桌面捕获路 Mac 上如实报
+  「批2 规划中」）；`screens` 非 Win 如实报不裸崩（审计 P2-2）
+
+### 设计
+- 设计文档 v0.2.0 扩展篇（跨平台+CDP+窗口捕获三批规划）+ 子 agent
+  两轮审计修订（规划稿 P1×3/P2×8；批1 代码 P1×1/P2×2 修复：WS buf
+  线穿、探活异常面、screens 错误纪律）
+
+### 测试
+- 57→62：WS 桩分片重组（ping 穿插）/ 合包共存+单帧应答 / 发侧长度
+  三态掩码 / DevToolsActivePort 三态 / discover 结构 / schema 七工具
+
 ## [0.1.12] - 2026-10-28
 
 ### 新增

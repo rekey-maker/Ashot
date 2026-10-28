@@ -17,10 +17,15 @@ import subprocess
 import sys
 import time
 
-U32 = ctypes.windll.user32
-G32 = ctypes.windll.gdi32   # BitBlt/CreateCompatibleDC 等 GDI 族在 gdi32——
-# v0.1.5 实锤：曾全部挂 user32（无该导出）→ 主路自 v0.1.0 起每次必抛
-# AttributeError 静默降级 PS 兜底，GDI 路从未真正跑过
+if sys.platform == "win32":
+    U32 = ctypes.windll.user32
+    G32 = ctypes.windll.gdi32   # BitBlt/CreateCompatibleDC 等 GDI 族在
+    # gdi32——v0.1.5 实锤：曾全部挂 user32（无该导出）→ 主路自 v0.1.0
+    # 起每次必抛 AttributeError 静默降级 PS 兜底，GDI 路从未真正跑过
+else:   # v0.2.0 导入守卫（审计 P1-1）：非 Windows 上本模块仅提供
+    # 兜底路/枚举的 platform 分流，windll 不存在——顶层访问会让
+    # cli/mcp 连 cdp 等跨平台命令都起不来
+    U32 = G32 = None
 
 
 def _dpi_aware():
@@ -34,6 +39,10 @@ def _dpi_aware():
 
 def list_screens():
     """枚举物理屏 -> [{"index", "left", "top", "w", "h", "primary"}]。"""
+    if sys.platform != "win32":
+        # v0.2.0（审计 P2-2）：非 Win 如实报，不裸 AttributeError
+        raise RuntimeError("显示器枚举暂不支持平台 %r（Mac 属批2）"
+                           % sys.platform)
     _dpi_aware()
     screens = []
 
@@ -181,6 +190,12 @@ def shot(mode="full", screen=None, area=None):
       主路成功 -> {"kind": "raw", "w", "h", "bgra"}（交 output 编码 PNG）
       兜底成功 -> {"kind": "png", "png"}（已是 PNG 字节）
     """
+    if sys.platform != "win32":
+        # v0.2.0：桌面捕获路 Windows 专属——非 Win 平台如实报（Mac
+        # 捕获路 capture_mac 属批2；cdp 等跨平台命令不受此影响）
+        raise RuntimeError(
+            "桌面截图暂不支持平台 %r（Mac 捕获路规划中，见设计文档 v0.2.0 批2）"
+            % sys.platform)
     if mode == "full":
         box = _virtual_box()
     elif mode == "screen":
