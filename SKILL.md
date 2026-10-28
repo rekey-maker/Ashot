@@ -54,6 +54,10 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   "color":"#FFFFFF"}]'`
 - `fonts [filter]`（v0.1.10）——列出已装字体族（英文规范名，双语过滤：
   "kai"/"楷体" 都能查到 KaiTi）；族名走 stdout、计数走 stderr。
+- `show <image> --title T [--caption C] [--out-dir D] [--width N]`
+  （v0.1.12）——图片→数据 URL 内嵌 HTML（用户可见展示，::visualize
+  场景 out_dir 传会话可视化目录）；html 路径 stdout、preview 信息
+  stderr。
 - `screens`——列出显示器。
 
 ## MCP（ashot 域名，宿主注册后可用）
@@ -61,13 +65,16 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 `all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」）、
 `ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
 覆盖原图**）、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
-{ok, count, families}；**新增工具需宿主重连后才出现在工具表**）——
-与 CLI 同能力。**v0.1.11 起两工具均可选 `preview`=true：收据升级多
+{ok, count, families}）、**`ashot_show`（v0.1.12，image/title/
+out_dir 必填 + caption?/width?——用户可见展示，见上）**；**新增工具
+需宿主重连后才出现在工具表**——与 CLI 同能力。**v0.1.11 起两工具均可选 `preview`=true：收据升级多
 内容块、附 1200px JPEG 缩图（ImageContent，audience:user；≤500KB
 梯次降档）。ZCode 宿主实测（用户纠偏修正）：宿主把图转成**视觉块喂
-模型**（agent 可直接看图自检标注，省 Read 大图）但**不渲染给用户**——
-**给用户看图走 `tmp/show.py` + ::visualize**（唯一被证实的用户可见
-通道），两通道分工勿混。**
+模型**（agent 可直接看图自检标注，省 Read 大图）但**不渲染给用户**。
+**v0.1.12 起用户看图走第五工具 `ashot_show`（image/title/out_dir
+必填 + caption?/width?）或 CLI `show`**——数据 URL 内嵌 HTML 落
+会话可视化目录，配 ::visualize 引用（唯一被证实的用户可见通道），
+两通道分工勿混。**
 
 **部署纪律（2026-10-28 实弹）**：改了 Ashot 代码后，宿主重启未必真换
 MCP 进程（进程会赖着旧代码，如 screens 返回 0×0 假象）——杀掉

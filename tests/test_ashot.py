@@ -418,7 +418,8 @@ def test_mcp_tool_schemas():
     """P3 死代码清理后 schema 生成仍自洽：required 推导 + 属性集合。"""
     from ashot import mcp as mcp_mod
     assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
-                                  "ashot_annotate", "ashot_fonts"}
+                                  "ashot_annotate", "ashot_fonts",
+                                  "ashot_show"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
@@ -429,6 +430,10 @@ def test_mcp_tool_schemas():
     fc = mcp_mod.TOOLS["ashot_fonts"]["inputSchema"]
     assert fc["required"] == []
     assert set(fc["properties"]) == {"filter"}
+    wc = mcp_mod.TOOLS["ashot_show"]["inputSchema"]
+    assert wc["required"] == ["image", "title", "out_dir"]
+    assert set(wc["properties"]) == {"image", "title", "out_dir",
+                                     "caption", "width"}
 
 
 # ---------- v0.1.6 渐变实心箭头 + 圆角矩形 ----------
@@ -842,3 +847,72 @@ def test_preview_jpeg_no_upscale_and_ladder():
     jpeg, info = output.preview_jpeg(big, max_bytes=500)
     assert info["width"] == 600 and info["fit"] is False, info
     assert len(jpeg) == info["bytes"]
+
+
+# ---------- v0.1.12 show 用户可见展示 ----------
+
+def test_show_build_html(tmp_path):
+    """show：数据 URL 内嵌落盘、标题规范化、不放大、caption 缺省。"""
+    from ashot import show as show_mod
+    img = tmp_path / "cam Case!.png"
+    img.write_bytes(_tiny_png())
+    res = show_mod.build_html(str(img), "My Title! 42", str(tmp_path))
+    assert res["ok"] and res["title"] == "my-title-42"
+    assert os.path.isfile(res["html"])
+    html_text = open(res["html"], encoding="utf-8").read()
+    assert "data:image/jpeg;base64," in html_text
+    assert "cam Case!.png" in html_text   # caption 缺省=文件名（escaped）
+    assert res["preview"]["width"] == 4   # 不放大
+    assert html_text.index("data:image/jpeg") > 0
+
+
+def test_show_build_html_empty_title_raises(tmp_path):
+    """title 全非法字符 → 规范化为空，如实报错不静默。"""
+    from ashot import show as show_mod
+    import pytest
+    img = tmp_path / "t.png"
+    img.write_bytes(_tiny_png())
+    with pytest.raises(ValueError):
+        show_mod.build_html(str(img), "!!!", str(tmp_path))
+
+
+def test_show_caption_escaped_and_makedirs(tmp_path):
+    """恶意 caption 必须 html.escape（::visualize 渲染路径的注入防线，
+    审计 P2-2 mutant 实测存活后补锁）；out_dir 不存在自动创建（含
+    嵌套，审计 P3-7）。"""
+    from ashot import show as show_mod
+    img = tmp_path / "t.png"
+    img.write_bytes(_tiny_png())
+    res = show_mod.build_html(str(img), "cap test",
+                              str(tmp_path / "deep" / "nested"),
+                              caption='<img src=x onerror=alert(1)>&"')
+    html_text = open(res["html"], encoding="utf-8").read()
+    assert "<img src=x" not in html_text, "caption 注入未转义"
+    assert "&lt;img src=x onerror=alert(1)&gt;&amp;&quot;" in html_text
+
+
+def test_show_title_too_long_raises(tmp_path):
+    """title 超长（规范化后 >80 字符）如实报错（防 MAX_PATH 边缘，
+    审计 P3-4）。"""
+    from ashot import show as show_mod
+    import pytest
+    img = tmp_path / "t.png"
+    img.write_bytes(_tiny_png())
+    with pytest.raises(ValueError):
+        show_mod.build_html(str(img), "x" * 100, str(tmp_path))
+
+
+def test_show_cli_subcommand(tmp_path):
+    """CLI show 子命令子进程实跑：html 路径 stdout、preview 信息 stderr。"""
+    import subprocess
+    import sys
+    img = tmp_path / "in.png"
+    img.write_bytes(_tiny_png())
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "show",
+                        str(img), "--title", "cli show test",
+                        "--out-dir", str(tmp_path)],
+                       capture_output=True, timeout=60, cwd=ROOT)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    out = r.stdout.decode("utf-8", "replace")
+    assert os.path.isfile(out.strip().splitlines()[0])
+    assert "preview: " in r.stderr.decode("utf-8", "replace")

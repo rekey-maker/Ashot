@@ -19,8 +19,9 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，四工具 `ashot_shot` / `ashot_annotate` /
-  `ashot_screens` / `ashot_fonts`（v0.1.10 起），与 CLI 同能力
+- **MCP**：stdio JSON-RPC 2.0，五工具 `ashot_shot` / `ashot_annotate` /
+  `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
+  起），与 CLI 同能力
 
 ## 用法
 
@@ -29,6 +30,8 @@ python -m ashot.cli shot --out shot.png          # 全桌面
 python -m ashot.cli shot area --area 100 100 800 500
 python -m ashot.cli screens                      # 列显示器
 python -m ashot.cli fonts kai                    # 列已装字体族（text 的 font 先查后用）
+python -m ashot.cli show shot.png --title my-shot \
+  --out-dir ./out                                # 图片→内嵌 HTML（用户可见展示）
 python -m ashot.cli annotate shot.png '[
   {"kind":"rect","x":10,"y":10,"w":200,"h":50,"width":8,
    "color":"#07C160","radius":12},
@@ -48,6 +51,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），四工具与 CLI 同能力：
 | `ashot_annotate` | JSON ops 批量标注（收据带 `backend` 渲染后端 + `pixel_ops` 像素操作数；`preview=true` 同上） |
 | `ashot_screens` | 列显示器 |
 | `ashot_fonts` | 列已装字体族（text 的 font 先查后用；v0.1.10 起） |
+| `ashot_show` | 图片→数据 URL 内嵌 HTML（用户可见展示；v0.1.12 起） |
 
 注册到宿主（示例为 ZCode 的 `mcp.servers.ashot`；路径基准=本文件
 所在目录即仓库根）：
@@ -76,9 +80,10 @@ stdio JSON-RPC 2.0（协议 2024-11-05），四工具与 CLI 同能力：
 python -m pytest tests/ -q
 ```
 
-49 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+55 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
-（backend/pixel_ops）、字库查询、MCP 坏帧韧性、retention 边界等。
+（backend/pixel_ops）、字库查询、preview 图片收据、show 展示与
+caption 转义、MCP 坏帧韧性、retention 边界等。
 
 ## 设计原则
 

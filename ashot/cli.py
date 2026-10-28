@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Ashot.cli —— 命令行入口（shot / annotate 两子命令）。"""
+"""Ashot.cli —— 命令行入口（shot / annotate / screens / fonts / show）。"""
 import argparse
 import json
+import os
 import sys
 
-from . import __version__, annotate, annotate_gdi, capture, fonts, output
+from . import __version__, annotate, annotate_gdi, capture, fonts, output, show
 
 
 def _cmd_shot(a):
@@ -67,6 +68,21 @@ def _cmd_fonts(a):
         return 1
 
 
+def _cmd_show(a):
+    try:
+        res = show.build_html(a.image, a.title, a.out_dir,
+                              caption=a.caption, width=a.width)
+        print(res["html"])
+        print("preview: width=%d quality=%d bytes=%d fit=%s"
+              % (res["preview"]["width"], res["preview"]["quality"],
+                 res["preview"]["bytes"], res["preview"]["fit"]),
+              file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_screens(_a):
     for sc in capture.list_screens():
         print("#%(index)d %(w)dx%(h)d offset=(%(left)d,%(top)d)%(primary)s"
@@ -119,6 +135,15 @@ def main(argv=None):
     f.add_argument("filter", nargs="?", default=None,
                    help="不区分大小写子串过滤，如 kai / yahei")
     f.set_defaults(func=_cmd_fonts)
+
+    w = sub.add_parser("show", help="图片→内嵌 HTML（用户可见展示，配 ::visualize）")
+    w.add_argument("image", help="图片路径")
+    w.add_argument("--title", required=True, help="HTML 标识（规范化为 a-z0-9-）")
+    w.add_argument("--caption", default=None, help="图注（缺省=文件名）")
+    w.add_argument("--out-dir", default=os.getcwd(),
+                   help="输出目录（缺省=当前目录；::visualize 场景传会话可视化目录）")
+    w.add_argument("--width", type=int, default=1200, help="缩图宽度（不放大）")
+    w.set_defaults(func=_cmd_show)
 
     a = ap.parse_args(argv)
     return a.func(a)

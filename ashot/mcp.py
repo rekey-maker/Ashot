@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, annotate_gdi, capture, fonts, output  # noqa: E402
+from ashot import __version__, annotate, annotate_gdi, capture, fonts, output, show  # noqa: E402
 
 TOOLS = {}
 
@@ -146,10 +146,25 @@ def _fonts(filter=None):
                        "families": names}, ensure_ascii=False)
 
 
+def _show(image, title, out_dir, caption=None, width=1200):
+    """用户可见展示（v0.1.12）：图片 → 缩图 JPEG → base64 内嵌 HTML
+    片段落 <out_dir>/<title>.html。MCP ImageContent 只喂模型不渲染
+    用户（ZCode 实测，设计文档 §7.10.3 修正定稿）——用户看图唯一被
+    证实通道 = 数据 URL 内嵌 + 会话侧 ::visualize 引用。out_dir=会话
+    可视化目录（必填——::visualize 只渲染该目录内文件）。width 缩图
+    宽（不放大）。本工具需宿主重连后才会出现在工具表。返回收据
+    {ok, html, title, caption, preview}。"""
+    return json.dumps(show.build_html(image, title, out_dir,
+                                      caption=caption,
+                                      width=int(width or 1200)),
+                      ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
 _tool_named("ashot_fonts", _fonts)
+_tool_named("ashot_show", _show)
 
 _stop = False
 

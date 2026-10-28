@@ -2,6 +2,28 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.1.12] - 2026-10-28
+
+### 新增
+- **show 用户可见展示**（自 tmp/show.py 升格入库，用户裁决「弄到程序
+  里对接上」）：新模块 `ashot/show.py` 的 `build_html(image, title,
+  out_dir, caption?, width?)`——缩图/编码**复用 preview_jpeg 单源**，
+  base64 内嵌极简 HTML 落 `<out_dir>/<title>.html`；title 规范化为
+  `[a-z0-9-]`（空则如实报错）、caption 缺省=文件名（html.escape）、
+  out_dir 自动创建且由调用方给（::visualize 场景=会话可视化目录，
+  Ashot 不持有会话状态）
+- **CLI** `show <image> --title T [--caption C] [--out-dir D]
+  [--width N]`（html 路径 stdout、preview 信息 stderr）+ **MCP 第五
+  工具 `ashot_show`**（out_dir 必填；需宿主重连出现）
+
+### 背景
+- MCP ImageContent 宿主实测修正定稿：ZCode 转视觉块喂模型、**不渲染
+  给用户**（§7.10.3）——用户看图通道由此命令化
+
+### 测试
+- 52→55：build_html 落盘与数据 URL、标题规范化报错、CLI 子进程接线、
+  mcp schema 五工具集
+
 ## [0.1.11] - 2026-10-28
 
 ### 新增
