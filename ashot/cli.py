@@ -148,8 +148,11 @@ def _cmd_cdp_key(a):
             seq = cdp.key_events(a.key or "a", mods, text=a.text)
         else:
             seq = cdp.key_events(a.key, mods)
-        n = cdp.dispatch(ws, seq)
+        n, unresolved = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
+        if unresolved:
+            print("⚠ 未解析键名（无 VK 码透传，部分页面可能收不到）：%s"
+                  % ", ".join(unresolved), file=sys.stderr)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -163,7 +166,7 @@ def _cmd_cdp_wheel(a):
             return 1
         ev = {"type": "mouseWheel", "x": a.x, "y": a.y,
               "deltaX": a.dx, "deltaY": a.dy, "modifiers": 0}
-        n = cdp.dispatch(ws, [ev])
+        n, _ = cdp.dispatch(ws, [ev])
         print("dispatched: %d" % n)
         return 0
     except Exception as e:  # noqa: BLE001
@@ -185,7 +188,7 @@ def _cmd_cdp_click(a):
              "button": a.button, "buttons": 0, "clickCount": 1,
              "modifiers": 0},
         ]
-        n = cdp.dispatch(ws, seq)
+        n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
     except Exception as e:  # noqa: BLE001
@@ -200,7 +203,7 @@ def _cmd_cdp_drag(a):
             return 1
         seq = cdp.drag_events(a.x1, a.y1, a.x2, a.y2,
                               steps=a.steps, button=a.button)
-        n = cdp.dispatch(ws, seq)
+        n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
     except Exception as e:  # noqa: BLE001

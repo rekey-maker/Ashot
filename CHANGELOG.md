@@ -2,6 +2,25 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.2] - 2026-10-28
+
+### 修复（键盘覆盖补全批，用户问「所有键盘按键都支持了？」→诚实答未全→补上）
+- **键表补全**：F1-F12、符号键（semicolon/equal/comma/minus/period/
+  slash/backquote/brackets/backslash/quote，VK≠ord 的 ord 错表修正）、
+  insert/printscreen/numlock/capslock/scrolllock/pause/contextmenu、
+  小键盘全键（numpad0-9/运算符/enter）；**移位级符号** `:?!@#$%^&*()_
+  +<>"{}|~` 直查（VK=底层键位非 ord）
+- **key 名规范化**（子 agent 审计 P1-1，headless Edge 实机实锤）：表
+  内键的 `key` 字段出 UI Events 规范名（小写别名传入→`"Enter"`/`"F5"`
+  出）——旧版页面侧 `e.key` 为空串，按键监听收不到
+- **符号别名 key=符号本身**（审计 P1-2）：`;` 的 key 是 ";" 不是
+  "Semicolon"（Puppeteer 同款）
+- **未知键名亮牌契约**：透传事件带 `unresolved` 标记，dispatch 剥除
+  并汇总——CLI stderr 警告 + MCP 收据 `unresolved_keys`（审计 P1-3
+  死代码假锁换真 dispatch monkeypatch 测试：删 pop 即红）
+- 删除死函数 key_combo_events；测试 65→67（键表全覆盖/f5 VK/符号
+  别名/移位符/未知键标记/线上无非法字段）
+
 ## [0.2.1] - 2026-10-28
 
 ### 新增（批1 追加：CDP 输入事件注入，用户需求：滚轮/回车/组合键/拖拽）

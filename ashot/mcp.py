@@ -213,8 +213,11 @@ def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
     ws_url = ws or _resolve_cdp(port, index)
     mods = modifiers if isinstance(modifiers, int) else (modifiers or 0)
     seq = cdp.key_events(key, mods, text=text)
-    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
-                      ensure_ascii=False)
+    n, unresolved = cdp.dispatch(ws_url, seq)
+    rec = {"ok": True, "dispatched": n}
+    if unresolved:
+        rec["unresolved_keys"] = unresolved   # 无 VK 码透传，如实亮牌
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
@@ -223,8 +226,8 @@ def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
     ws_url = ws or _resolve_cdp(port, index)
     ev = {"type": "mouseWheel", "x": int(x), "y": int(y),
           "deltaX": int(dx), "deltaY": int(dy), "modifiers": 0}
-    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, [ev])},
-                      ensure_ascii=False)
+    n, _ = cdp.dispatch(ws_url, [ev])
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
 def _cdp_click(x, y, button="left", port=None, index=0, ws=None):
@@ -239,8 +242,8 @@ def _cdp_click(x, y, button="left", port=None, index=0, ws=None):
            {"type": "mouseReleased", "x": int(x), "y": int(y),
             "button": button, "buttons": 0, "clickCount": 1,
             "modifiers": 0}]
-    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
-                      ensure_ascii=False)
+    n, _ = cdp.dispatch(ws_url, seq)
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
 def _cdp_drag(x1, y1, x2, y2, steps=8, button="left", port=None,
@@ -250,8 +253,8 @@ def _cdp_drag(x1, y1, x2, y2, steps=8, button="left", port=None,
     ws_url = ws or _resolve_cdp(port, index)
     seq = cdp.drag_events(x1, y1, x2, y2, steps=int(steps or 8),
                           button=button)
-    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
-                      ensure_ascii=False)
+    n, _ = cdp.dispatch(ws_url, seq)
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
 _tool_named("ashot_shot", _shot)

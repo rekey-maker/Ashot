@@ -304,16 +304,76 @@ def tabs(port):
 # ---------- 输入事件（v0.2.0 §4.2.2：滚轮/按键/组合键/拖拽） ----------
 
 MODIFIERS = {"alt": 1, "ctrl": 2, "meta": 4, "shift": 8}
-# 常用控制键：UI Events key 名 -> [windowsVirtualKeyCode, code]
+# 控制键：小写别名 -> (UI Events 规范 key 名, VK, code)——key 名是
+# Chromium DomKey 精确匹配用的（审计 P1-1：传小写别名页面 e.key=空串）
 _SPECIAL_KEYS = {
-    "enter": (13, "Enter"), "tab": (9, "Tab"), "escape": (27, "Escape"),
-    "backspace": (8, "Backspace"), "delete": (46, "Delete"),
-    "space": (32, "Space"), "arrowup": (38, "ArrowUp"),
-    "arrowdown": (40, "ArrowDown"), "arrowleft": (37, "ArrowLeft"),
-    "arrowright": (39, "ArrowRight"), "home": (36, "Home"),
-    "end": (35, "End"), "pageup": (33, "PageUp"),
-    "pagedown": (34, "PageDown"),
+    "enter": ("Enter", 13, "Enter"), "tab": ("Tab", 9, "Tab"),
+    "escape": ("Escape", 27, "Escape"),
+    "backspace": ("Backspace", 8, "Backspace"),
+    "delete": ("Delete", 46, "Delete"), "space": (" ", 32, "Space"),
+    "arrowup": ("ArrowUp", 38, "ArrowUp"),
+    "arrowdown": ("ArrowDown", 40, "ArrowDown"),
+    "arrowleft": ("ArrowLeft", 37, "ArrowLeft"),
+    "arrowright": ("ArrowRight", 39, "ArrowRight"),
+    "home": ("Home", 36, "Home"), "end": ("End", 35, "End"),
+    "pageup": ("PageUp", 33, "PageUp"), "pagedown": ("PageDown", 34,
+                                                     "PageDown"),
+    "f1": ("F1", 112, "F1"), "f2": ("F2", 113, "F2"),
+    "f3": ("F3", 114, "F3"), "f4": ("F4", 115, "F4"),
+    "f5": ("F5", 116, "F5"), "f6": ("F6", 117, "F6"),
+    "f7": ("F7", 118, "F7"), "f8": ("F8", 119, "F8"),
+    "f9": ("F9", 120, "F9"), "f10": ("F10", 121, "F10"),
+    "f11": ("F11", 122, "F11"), "f12": ("F12", 123, "F12"),
+    "semicolon": (";", 186, "Semicolon"), "equal": ("=", 187, "Equal"),
+    "comma": (",", 188, "Comma"), "minus": ("-", 189, "Minus"),
+    "period": (".", 190, "Period"), "slash": ("/", 191, "Slash"),
+    "backquote": ("`", 192, "Backquote"),
+    "bracketleft": ("[", 219, "BracketLeft"),
+    "backslash": ("\\", 220, "Backslash"),
+    "bracketright": ("]", 221, "BracketRight"),
+    "quote": ("'", 222, "Quote"),
+    "insert": ("Insert", 45, "Insert"),
+    "printscreen": ("PrintScreen", 44, "PrintScreen"),
+    "numlock": ("NumLock", 144, "NumLock"),
+    "capslock": ("CapsLock", 20, "CapsLock"),
+    "scrolllock": ("ScrollLock", 145, "ScrollLock"),
+    "pause": ("Pause", 19, "Pause"),
+    "contextmenu": ("ContextMenu", 93, "ContextMenu"),
+    "numpad0": ("0", 96, "Numpad0"), "numpad1": ("1", 97, "Numpad1"),
+    "numpad2": ("2", 98, "Numpad2"), "numpad3": ("3", 99, "Numpad3"),
+    "numpad4": ("4", 100, "Numpad4"), "numpad5": ("5", 101, "Numpad5"),
+    "numpad6": ("6", 102, "Numpad6"), "numpad7": ("7", 103, "Numpad7"),
+    "numpad8": ("8", 104, "Numpad8"), "numpad9": ("9", 105, "Numpad9"),
+    "numpadadd": ("+", 107, "NumpadAdd"),
+    "numpadsubtract": ("-", 109, "NumpadSubtract"),
+    "numpadmultiply": ("*", 106, "NumpadMultiply"),
+    "numpaddivide": ("/", 111, "NumpadDivide"),
+    "numpaddecimal": (".", 110, "NumpadDecimal"),
+    "numpadenter": ("Enter", 13, "NumpadEnter"),
 }
+# 移位级符号（Shift+键位产生）：字符 -> (底层具名键别名, VK, code)
+# ——key=字符本身（UI Events 规范），P2-1 补全
+_SHIFT_SYMS = {
+    ":": ("semicolon", 186, "Semicolon"), "+": ("equal", 187, "Equal"),
+    "<": ("comma", 188, "Comma"), "_": ("minus", 189, "Minus"),
+    ">": ("period", 190, "Period"), "?": ("slash", 191, "Slash"),
+    "~": ("backquote", 192, "Backquote"),
+    "!": ("digit1", 49, "Digit1"), "@": ("digit2", 50, "Digit2"),
+    "#": ("digit3", 51, "Digit3"), "$": ("digit4", 52, "Digit4"),
+    "%": ("digit5", 53, "Digit5"), "^": ("digit6", 54, "Digit6"),
+    "&": ("digit7", 55, "Digit7"), "*": ("digit8", 56, "Digit8"),
+    "(": ("digit9", 57, "Digit9"), ")": ("digit0", 58, "Digit0"),
+    '"': ("quote", 222, "Quote"),
+    "{": ("bracketleft", 219, "BracketLeft"),
+    "}": ("bracketright", 221, "BracketRight"),
+    "|": ("backslash", 220, "Backslash"),
+}
+# 符号字符 -> 具名键（让 ";" 这类直接可传，不必记 semicolon）
+_SYM_ALIAS = {";": "semicolon", "=": "equal", ",": "comma", "-": "minus",
+              ".": "period", "/": "slash", "`": "backquote",
+              "[": "bracketleft", "\\": "backslash",
+              "]": "bracketright", "'": "quote"}
+_SYM_ALIAS.update({c: v[0] for c, v in _SHIFT_SYMS.items()})
 _MODIFIER_KEYS = {"alt": ("Alt", 18), "ctrl": ("Control", 17),
                   "meta": ("Meta", 91), "shift": ("Shift", 16)}
 
@@ -358,12 +418,27 @@ def key_events(key, modifiers=0, text=None):
                     "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
                     "modifiers": mods})
     if lname in _SPECIAL_KEYS:
-        vk, code = _SPECIAL_KEYS[lname]
-        ev = {"type": "keyDown", "key": k if len(k) > 1 else lname,
-              "code": code, "windowsVirtualKeyCode": vk,
-              "nativeVirtualKeyCode": vk, "modifiers": mods}
+        key_name, vk, code = _SPECIAL_KEYS[lname]
+        ev = {"type": "keyDown", "key": key_name, "code": code,
+              "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+              "modifiers": mods}
         seq.append(ev)
         seq.append(dict(ev, type="keyUp"))
+    elif len(k) == 1 and k in _SYM_ALIAS:
+        # 符号字符别名（";"/":"→ 查表）：key=符号本身（UI Events 规范，
+        # 审计 P1-2：code 名不是 key 名），VK 走查表非 ord
+        name = _SYM_ALIAS[k]
+        ent = _SHIFT_SYMS.get(k)
+        if ent:
+            _, vk, code = ent   # 移位级符号：直查 (别名, VK, code)
+        else:
+            _, vk, code = _SPECIAL_KEYS[name]
+        base = {"key": k, "code": code,
+                "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+                "modifiers": mods}
+        seq.append(dict(base, type="keyDown"))
+        seq.append(dict(base, type="char", text=k, unmodifiedText=k))
+        seq.append(dict(base, type="keyUp"))
     elif len(k) == 1:
         ch = text if text is not None else k
         vk = ord(k.upper())
@@ -375,9 +450,12 @@ def key_events(key, modifiers=0, text=None):
                         unmodifiedText=ch))
         seq.append(dict(base, type="keyUp"))
     else:
-        # 具名键不在表内：透传名字（CDP 接受 UI Events key 名）
-        seq.append({"type": "keyDown", "key": k, "modifiers": mods})
-        seq.append({"type": "keyUp", "key": k, "modifiers": mods})
+        # 具名键不在表内：透传名字（CDP 接受 UI Events key 名），但
+        # 收据层亮牌——无 VK 码部分页面收不到（v0.2.2 如实亮牌纪律）
+        seq.append({"type": "keyDown", "key": k, "modifiers": mods,
+                    "unresolved": True})
+        seq.append({"type": "keyUp", "key": k, "modifiers": mods,
+                    "unresolved": True})
     # 释放序：修饰键回弹
     for mk in reversed(mod_downs):
         name, vk = _MODIFIER_KEYS[mk]
@@ -385,18 +463,9 @@ def key_events(key, modifiers=0, text=None):
                     "code": name + "Left" if name != "Meta" else "MetaLeft",
                     "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
                     "modifiers": mods})
+    # unresolved 标记保留在事件上（调用方/合并序列可检查）——由
+    # dispatch() 负责剥除并汇总进收据（v0.2.2 亮牌契约）
     return seq
-
-
-def key_combo_events(text):
-    """连续文本/序列的键击流：字符串逐字符 key_events（支持 "ctrl+s"
-    形态的具名组合——'+' 切分后 modifiers 前缀 + 单主键）。"""
-    out = []
-    for ch in str(text):
-        if ch == "+" and False:  # 占位：'+ ' 字符本身走 else 分支
-            continue
-        out.extend(key_events(ch))
-    return out
 
 
 def drag_events(x1, y1, x2, y2, steps=8, button="left"):
@@ -425,15 +494,19 @@ def dispatch(ws_url, events, timeout=30):
     往返——每事件一次连接略重但批1 语义最简；返回成功条数）。
     路由：keyDown/keyUp/rawKeyDown/char → dispatchKeyEvent；其余
     （mousePressed/mouseReleased/mouseMoved/mouseWheel）→
-    dispatchMouseEvent。"""
+    dispatchMouseEvent。unresolved 标记（未知键名透传）会被剥除并
+    汇总——返回 (n, unresolved_keys)。"""
     _KEY_TYPES = ("keyDown", "keyUp", "rawKeyDown", "char")
     n = 0
+    unresolved = []
     for ev in events:
+        if ev.pop("unresolved", False) and ev.get("key") not in unresolved:
+            unresolved.append(ev.get("key"))
         method = ("Input.dispatchKeyEvent" if ev.get("type") in _KEY_TYPES
                   else "Input.dispatchMouseEvent")
         call(ws_url, method, ev, timeout)
         n += 1
-    return n
+    return n, unresolved
 
 
 def ws_for(port, index=0):

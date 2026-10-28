@@ -1164,17 +1164,22 @@ def test_cdp_find_port_from_profile(tmp_path):
 
 def test_key_events_sequences():
     """键序列构造（审计规格 §4.2.2）：可见字符 rawKeyDown+char+keyUp
-    三连；控制键 keyDown+keyUp；组合键 modifiers 位+按住/回弹序。"""
+    三连；控制键 keyDown+keyUp 且 key 名=UI Events 规范（审计 P1-1：
+    小写别名传入、规范 key 名出——页面 e.key 可识别）；组合键
+    modifiers 位+按住/回弹序。"""
     from ashot import cdp as cdp_mod
     # 可见字符三连，char 带 text
     seq = cdp_mod.key_events("a")
     assert [e["type"] for e in seq] == ["rawKeyDown", "char", "keyUp"]
     assert seq[1]["text"] == "a"
     assert seq[0]["windowsVirtualKeyCode"] == 65
-    # 控制键双发
+    # 控制键双发：key 名必须是规范名（实机 e.key 可识别）
     seq = cdp_mod.key_events("enter")
     assert [e["type"] for e in seq] == ["keyDown", "keyUp"]
+    assert seq[0]["key"] == "Enter"
     assert seq[0]["windowsVirtualKeyCode"] == 13
+    seq = cdp_mod.key_events("f5")
+    assert seq[0]["key"] == "F5" and seq[0]["code"] == "F5"
     # 组合键：ctrl+s = ctrl 按下 + s(rawDown/char/keyUp, modifiers=2)
     #          + ctrl 回弹
     seq = cdp_mod.key_events("s", "ctrl")
@@ -1191,6 +1196,52 @@ def test_key_events_sequences():
         raise AssertionError("未知修饰键未报错")
     except ValueError:
         pass
+
+
+def test_key_events_full_coverage():
+    """v0.2.2 键表补全锁：F 功能键/符号别名（非移位+移位级）/未知键
+    unresolved 标记 + dispatch 真实剥除汇总（审计 P1-3 死代码假锁
+    换真测试：monkeypatch call 零网络验证 pop 契约）。"""
+    from ashot import cdp as cdp_mod
+    # F 键查表（VK 112-123，非 ord）+ 规范 key 名
+    seq = cdp_mod.key_events("f5")
+    assert seq[0]["windowsVirtualKeyCode"] == 116
+    assert seq[0]["code"] == "F5" and seq[0]["key"] == "F5"
+    # 符号字符别名：";" → semicolon（VK 186 ≠ ord(';')=59——ord 错表修正）
+    seq = cdp_mod.key_events(";")
+    assert seq[0]["windowsVirtualKeyCode"] == 186
+    assert seq[0]["code"] == "Semicolon"
+    assert seq[0]["key"] == ";"   # 审计 P1-2：key=符号本身非 code 名
+    assert any(e.get("type") == "char" and e["text"] == ";"
+               for e in seq)
+    # 具名符号键也可直接传（key 名=符号）
+    seq = cdp_mod.key_events("minus")
+    assert seq[0]["windowsVirtualKeyCode"] == 189
+    assert seq[0]["key"] == "-"
+    # 移位级符号（审计 P2-1）：":" → VK 186（Shift 位产生，本表直出）
+    seq = cdp_mod.key_events(":")
+    assert seq[0]["windowsVirtualKeyCode"] == 186
+    assert seq[0]["key"] == ":" and seq[0]["code"] == "Semicolon"
+    assert seq[0]["windowsVirtualKeyCode"] != ord(":")
+    # 未知键名：透传但带 unresolved 标记（收据亮牌契约）
+    seq = cdp_mod.key_events("MediaPlay")
+    assert all(e.get("unresolved") for e in seq)
+
+
+def test_dispatch_strips_unresolved(monkeypatch):
+    """dispatch 真实剥除 unresolved 并汇总（审计 P1-3：原测试 if False
+    死代码假锁——mutant 实测删 pop 全绿存活）。monkeypatch call 零网络。"""
+    from ashot import cdp as cdp_mod
+    captured = []
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda ws, m, p, timeout=30: captured.append(p)
+                        or {})
+    seq = cdp_mod.key_events("MediaPlay")
+    assert all(e.get("unresolved") for e in seq)
+    n, unresolved = cdp_mod.dispatch("ws://127.0.0.1:1/x", seq)
+    assert n == 2 and unresolved == ["MediaPlay"]
+    # 发到线上的事件不得携带非法字段 unresolved
+    assert all("unresolved" not in e for e in captured), captured
 
 
 def test_drag_events_sequence():
@@ -1269,9 +1320,11 @@ def test_cdp_dispatch_with_stub():
     threads = []
     for _ in range(4):
         threads.append(srv.serve_once())
-    n = cdp_mod.dispatch("ws://127.0.0.1:%d/devtools/page/z" % srv.port,
-                         cdp_mod.drag_events(0, 0, 40, 30, steps=1))
+    n, unresolved = cdp_mod.dispatch(
+        "ws://127.0.0.1:%d/devtools/page/z" % srv.port,
+        cdp_mod.drag_events(0, 0, 40, 30, steps=1))
     for t in threads:
         t.join(timeout=5)
     assert n == 4, n   # moved + pressed + moved + released
+    assert unresolved == []
     assert len(sent) == 4
