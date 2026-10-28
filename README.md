@@ -2,7 +2,13 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.3.0**，MCP 20 个工具。
+
+## 安装与要求
+
+- Python **3.9+**（实测 3.12）；**零第三方依赖**，无需 `pip install`
+- 桌面截图仅 **Windows 10/11**；CDP 浏览器捕获/操作跨平台（Mac 桌面路属批2）
+- 仓库根直接运行：`python -m ashot.cli --help` / `python ashot_mcp.py`
 
 ## 能力
 
@@ -24,7 +30,8 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `cdp-shot` 抓任何 Chromium 系浏览器的标签页（**无头/有头通吃，与
   AI 宿主无关**），captureBeyondViewport 全页，自动发现调试端口；
   **超长页自动滚动拼接**（v0.2.6：先试单张，被拒才逐屏拼；收据
-  `stitched/shots`，`--no-stitch` 关闭）
+  `stitched/shots`，`--no-stitch` 关闭；v0.2.8 拼接前隐藏 fixed/sticky，
+  收据 `fixed_hidden`）
 - **浏览器操作**（v0.2.1-0.2.5）：点击/双击/拖拽/滚轮/全键盘/组合
   快捷键/整段填表（insertText 含中文）；**人类化鼠标轨迹**（三次
   贝塞尔+缓动+微抖动，节奏三档可调（fast/normal/**captcha** 900~2600ms，
@@ -34,16 +41,19 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
 - **通用原语**（v0.2.7，非验证码专用）：**图像指纹/差异**（sha256 +
   dHash/aHash + YIQ 差异/bbox/差异图）、**元素矩形+可见性**（视口 CSS
   像素、checkVisibility、视口交集、中心遮挡、pointer-events）、
-  **iframe 坐标映射**（同源任意深度、跨域同进程、跨站 OOPIF；可见比例按 iframe 边界裁剪）
+  **iframe 坐标映射**（同源任意深度、跨域同进程、**跨站 OOPIF**；可见
+  比例按「主视口 ∩ iframe 内容框」裁剪，iframe 外不会被算成可见；
+  v0.2.8 补 OOPIF/裁剪）
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，十五工具 `ashot_shot` / `ashot_annotate` /
+- **MCP**：stdio JSON-RPC 2.0，二十工具 `ashot_shot` / `ashot_annotate` /
   `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
   起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0）/ `ashot_cdp_key`
   + `ashot_cdp_wheel` + `ashot_cdp_click` + `ashot_cdp_drag`（v0.2.1）/
   `ashot_cdp_dblclick` + `ashot_cdp_type`（v0.2.3）/ `ashot_cdp_eval` +
   `ashot_cdp_view`（v0.2.5）/ `ashot_hash` + `ashot_diff` +
-  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7），与 CLI 同能力
+  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8），
+  与 CLI 同能力；每个收据带 `ver`（识破旧进程）
 
 ## 用法
 
@@ -54,6 +64,10 @@ python -m ashot.cli screens                      # 列显示器
 python -m ashot.cli fonts kai                    # 列已装字体族（text 的 font 先查后用）
 python -m ashot.cli show shot.png --title my-shot \
   --out-dir ./out                                # 图片→内嵌 HTML（用户可见展示）
+python -m ashot.cli hash shot.png --algo dhash   # 图像指纹（sha/dhash/ahash）
+python -m ashot.cli diff a.png b.png --out d.png # 两图差异（YIQ+bbox+差异图）
+python -m ashot.cli element "#submit"            # 元素视口矩形+可见性（CSS px）
+python -m ashot.cli frames                       # frame 树（含 iframe 矩形）
 python -m ashot.cli annotate shot.png '[
   {"kind":"rect","x":10,"y":10,"w":200,"h":50,"width":8,
    "color":"#07C160","radius":12},
@@ -108,7 +122,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十工具与 CLI 同能力（每�
 python -m pytest tests/ -q
 ```
 
-108 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+111 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -126,3 +140,39 @@ retention 边界等。
 - **如实亮牌**：主路失败降级、黑帧、后端选择，全部进收据，绝不静默
 - **模块纪律**：capture（只抓像素）/ annotate（只标注）/ output（只交付）
   / mcp（零业务只转发）
+
+
+## 平台与边界
+
+| 能力 | 状态 |
+|---|---|
+| Windows 桌面截图（全屏/单屏/窗口/区域）、标注、剪贴板 | ✓ |
+| CDP 浏览器捕获/操作（无头/有头、任何宿主拉起的 Chromium） | ✓ 跨平台 |
+| 超长页滚动拼接（含隐藏吸顶元素） | ✓ |
+| 元素矩形/可见性、同源+跨域+跨站 OOPIF iframe 映射 | ✓（嵌套跨域仍不支持） |
+| macOS 桌面捕获 | ✗ 设计态（v0.2.0 批2） |
+| Windows 窗口枚举 / PrintWindow 后台窗口捕获 | ✗ 设计态（v0.2.0 批3） |
+| 验证码识别 / OCR | ✗ **刻意不做**（Ashot 只提供视觉/DOM 原语） |
+| 网络上传 | ✗ 永不做（隐私即卖点） |
+
+## 目录结构
+
+```
+ashot/
+├── capture.py / output.py      # 抓像素 / 交付（PNG、剪贴板、retention）
+├── annotate.py / vector.py     # 像素画布 / 几何编译
+├── annotate_gdi.py + _gdi_render.ps1  # GDI+ 矢量渲染（纯 ASCII 纪律）
+├── cdp.py                      # CDP 客户端（WS/截图/输入/滚动拼接）
+├── dom.py                      # 元素矩形+可见性 / iframe 坐标映射（v0.2.7+）
+├── vision.py                   # 图像指纹与差异（v0.2.7）
+├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
+├── docs/design/                # 设计文档（按版本）
+├── docs/review/                # 审查/核查报告
+└── tests/test_ashot.py         # 111 项
+```
+
+## 版本与文档
+
+- 版本史：[CHANGELOG.md](CHANGELOG.md)；设计文档索引：[docs/design/README.md](docs/design/README.md)
+- 审查与修复证据：[docs/review/](docs/review/)
+- 当前 0.3.0：功能同 0.2.8（OOPIF/可见比例/吸顶隐藏），版本号对齐能力里程碑
