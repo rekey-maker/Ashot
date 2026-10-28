@@ -122,6 +122,92 @@ def _cmd_cdp_shot(a):
         return 1
 
 
+def _resolve_cdp_ws(a):
+    """cdp-* 输入命令公共解析：--port/--ws -> ws url（discover 兜底）。"""
+    if getattr(a, "ws", None):
+        return a.ws
+    port = getattr(a, "port", None)
+    if port is None:
+        disc = cdp.discover()
+        if not disc["ports"]:
+            print("✗ %s" % disc["hint"], file=sys.stderr)
+            return None
+        port = disc["ports"][0]
+        print("discovered port: %d" % port, file=sys.stderr)
+    return cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0))
+
+
+def _cmd_cdp_key(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        mods = a.modifiers if a.modifiers is not None and a.modifiers != "" \
+            else 0
+        if a.text:
+            seq = cdp.key_events(a.key or "a", mods, text=a.text)
+        else:
+            seq = cdp.key_events(a.key, mods)
+        n = cdp.dispatch(ws, seq)
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_wheel(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        ev = {"type": "mouseWheel", "x": a.x, "y": a.y,
+              "deltaX": a.dx, "deltaY": a.dy, "modifiers": 0}
+        n = cdp.dispatch(ws, [ev])
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_click(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        seq = [
+            {"type": "mouseMoved", "x": a.x, "y": a.y, "modifiers": 0},
+            {"type": "mousePressed", "x": a.x, "y": a.y,
+             "button": a.button, "buttons": 1, "clickCount": 1,
+             "modifiers": 0},
+            {"type": "mouseReleased", "x": a.x, "y": a.y,
+             "button": a.button, "buttons": 0, "clickCount": 1,
+             "modifiers": 0},
+        ]
+        n = cdp.dispatch(ws, seq)
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_drag(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        seq = cdp.drag_events(a.x1, a.y1, a.x2, a.y2,
+                              steps=a.steps, button=a.button)
+        n = cdp.dispatch(ws, seq)
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_screens(_a):
     try:
         for sc in capture.list_screens():
@@ -201,6 +287,48 @@ def main(argv=None):
                     help="只抓视口（缺省 captureBeyondViewport 全页）")
     cs.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
     cs.set_defaults(func=_cmd_cdp_shot)
+
+    def _add_common(p):
+        p.add_argument("--port", type=int, default=None,
+                       help="调试端口（缺省=discover）")
+        p.add_argument("--index", type=int, default=0, help="第几个 page 标签")
+        p.add_argument("--ws", default=None,
+                       help="直接给 page 级 ws url（优先于 port/index）")
+
+    ck = sub.add_parser("cdp-key", help="CDP 按键/组合键/文本注入（v0.2.0）")
+    ck.add_argument("key", help="键名：a / enter / tab / arrowup / s（配 --modifiers）")
+    ck.add_argument("--text", default=None, help="覆盖产生的文本（缺省=key 本身）")
+    ck.add_argument("--modifiers", default=None,
+                    help="组合键：alt/ctrl/meta/shift 可加和，如 ctrl+shift")
+    _add_common(ck)
+    ck.set_defaults(func=_cmd_cdp_key)
+
+    cw = sub.add_parser("cdp-wheel", help="CDP 鼠标滚轮（v0.2.0）")
+    cw.add_argument("--dx", type=int, default=0, help="横向滚动量")
+    cw.add_argument("--dy", type=int, default=600, help="纵向滚动量（正=向下）")
+    cw.add_argument("--x", type=int, default=100, help="事件坐标 x")
+    cw.add_argument("--y", type=int, default=100, help="事件坐标 y")
+    _add_common(cw)
+    cw.set_defaults(func=_cmd_cdp_wheel)
+
+    cc = sub.add_parser("cdp-click", help="CDP 鼠标单击（v0.2.0）")
+    cc.add_argument("x", type=int, help="点击 x（CSS 像素）")
+    cc.add_argument("y", type=int, help="点击 y")
+    cc.add_argument("--button", default="left",
+                    choices=["left", "right", "middle"], help="键")
+    _add_common(cc)
+    cc.set_defaults(func=_cmd_cdp_click)
+
+    cd = sub.add_parser("cdp-drag", help="CDP 鼠标拖拽（按下→插值移动→释放，v0.2.0）")
+    cd.add_argument("x1", type=int, help="起点 x")
+    cd.add_argument("y1", type=int, help="起点 y")
+    cd.add_argument("x2", type=int, help="终点 x")
+    cd.add_argument("y2", type=int, help="终点 y")
+    cd.add_argument("--steps", type=int, default=8, help="插值步数")
+    cd.add_argument("--button", default="left",
+                    choices=["left", "right", "middle"], help="键")
+    _add_common(cd)
+    cd.set_defaults(func=_cmd_cdp_drag)
 
     a = ap.parse_args(argv)
     return a.func(a)

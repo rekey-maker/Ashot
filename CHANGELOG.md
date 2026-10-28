@@ -2,6 +2,25 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.1] - 2026-10-28
+
+### 新增（批1 追加：CDP 输入事件注入，用户需求：滚轮/回车/组合键/拖拽）
+- **按键/组合键** `cdp-key`：可见字符 `rawKeyDown`+`char` 双发（只发
+  rawKeyDown 不产生输入、只发 char 不触发快捷键）、控制键 keyDown+
+  keyUp、**组合键 modifiers 位掩码**（Alt1/Ctrl2/Meta4/Shift8，如
+  `--modifiers ctrl+shift`）+ 按住/回弹序；`--text` 覆盖注入文本
+- **滚轮** `cdp-wheel`（dx/dy）、**单击** `cdp-click`（x/y/button）、
+  **拖拽** `cdp-drag`（按下→插值移动→释放事件序列）
+- MCP 第 8-11 工具 `ashot_cdp_key/cdp_wheel/cdp_click/cdp_drag`
+  （需宿主重连）
+- 修复 dispatch 路由 bug：char 事件 type 不以 key 开头被误路由到
+  dispatchMouseEvent（实弹抓到）
+- 实弹验证（headless Edge 交互页）：键击产生真实输入（DOM value=ab
+  + input 事件触发）、Enter 键监听命中、滚轮 scrollY=800、拖拽/组合
+  键派发成功
+- 设计文档 §4.2.2；测试 62→65（键序列/拖拽序列纯函数锁、WS 桩派发
+  往返、schema 十一工具）
+
 ## [0.2.0] - 2026-10-28
 
 ### 新增（v0.2.0 批1：CDP 浏览器捕获，跨平台）

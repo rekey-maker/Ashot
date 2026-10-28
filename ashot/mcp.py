@@ -194,6 +194,66 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None):
                        "fullpage": info["fullpage"]}, ensure_ascii=False)
 
 
+def _resolve_cdp(port, index=0):
+    """cdp 输入工具公共解析：port 缺省 discover -> page ws。"""
+    if port in (None, "", 0):
+        disc = cdp.discover()
+        if not disc["ports"]:
+            raise RuntimeError(disc["hint"])
+        port = disc["ports"][0]
+    return cdp.ws_for(int(port), index=int(index or 0))
+
+
+def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
+    """CDP 按键/组合键/文本注入（v0.2.0 §4.2.2）：key=键名（a/enter/
+    tab/arrowup/s…）；modifiers=组合键 "ctrl+shift"（位掩码
+    Alt1/Ctrl2/Meta4/Shift8）；text=覆盖产生的文本（如中文）。可见
+    字符 rawKeyDown+char 双发，控制键 keyDown+keyUp。返回
+    {ok, dispatched}。需宿主重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    mods = modifiers if isinstance(modifiers, int) else (modifiers or 0)
+    seq = cdp.key_events(key, mods, text=text)
+    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
+                      ensure_ascii=False)
+
+
+def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
+    """CDP 鼠标滚轮（v0.2.0）：dy 正=向下滚动，dx 横向；x/y=事件坐标
+    （CSS 像素）。返回 {ok, dispatched}。需宿主重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    ev = {"type": "mouseWheel", "x": int(x), "y": int(y),
+          "deltaX": int(dx), "deltaY": int(dy), "modifiers": 0}
+    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, [ev])},
+                      ensure_ascii=False)
+
+
+def _cdp_click(x, y, button="left", port=None, index=0, ws=None):
+    """CDP 鼠标单击（v0.2.0）：x/y=CSS 像素；button=left/right/middle。
+    mousePressed+mouseReleased 序列。返回 {ok, dispatched}。需宿主
+    重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    seq = [{"type": "mouseMoved", "x": int(x), "y": int(y), "modifiers": 0},
+           {"type": "mousePressed", "x": int(x), "y": int(y),
+            "button": button, "buttons": 1, "clickCount": 1,
+            "modifiers": 0},
+           {"type": "mouseReleased", "x": int(x), "y": int(y),
+            "button": button, "buttons": 0, "clickCount": 1,
+            "modifiers": 0}]
+    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
+                      ensure_ascii=False)
+
+
+def _cdp_drag(x1, y1, x2, y2, steps=8, button="left", port=None,
+              index=0, ws=None):
+    """CDP 鼠标拖拽（v0.2.0）：按下→插值移动 steps 步→释放。
+    返回 {ok, dispatched}。需宿主重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    seq = cdp.drag_events(x1, y1, x2, y2, steps=int(steps or 8),
+                          button=button)
+    return json.dumps({"ok": True, "dispatched": cdp.dispatch(ws_url, seq)},
+                      ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
@@ -201,6 +261,10 @@ _tool_named("ashot_fonts", _fonts)
 _tool_named("ashot_show", _show)
 _tool_named("ashot_cdp_tabs", _cdp_tabs)
 _tool_named("ashot_cdp_shot", _cdp_shot)
+_tool_named("ashot_cdp_key", _cdp_key)
+_tool_named("ashot_cdp_wheel", _cdp_wheel)
+_tool_named("ashot_cdp_click", _cdp_click)
+_tool_named("ashot_cdp_drag", _cdp_drag)
 
 _stop = False
 

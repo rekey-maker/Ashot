@@ -301,6 +301,150 @@ def tabs(port):
     return [t for t in list_targets(port) if t["type"] == "page"]
 
 
+# ---------- 输入事件（v0.2.0 §4.2.2：滚轮/按键/组合键/拖拽） ----------
+
+MODIFIERS = {"alt": 1, "ctrl": 2, "meta": 4, "shift": 8}
+# 常用控制键：UI Events key 名 -> [windowsVirtualKeyCode, code]
+_SPECIAL_KEYS = {
+    "enter": (13, "Enter"), "tab": (9, "Tab"), "escape": (27, "Escape"),
+    "backspace": (8, "Backspace"), "delete": (46, "Delete"),
+    "space": (32, "Space"), "arrowup": (38, "ArrowUp"),
+    "arrowdown": (40, "ArrowDown"), "arrowleft": (37, "ArrowLeft"),
+    "arrowright": (39, "ArrowRight"), "home": (36, "Home"),
+    "end": (35, "End"), "pageup": (33, "PageUp"),
+    "pagedown": (34, "PageDown"),
+}
+_MODIFIER_KEYS = {"alt": ("Alt", 18), "ctrl": ("Control", 17),
+                  "meta": ("Meta", 91), "shift": ("Shift", 16)}
+
+
+def _parse_modifiers(mods):
+    """"ctrl+shift" / ["ctrl","shift"] -> 位掩码（Alt1 Ctrl2 Meta4
+    Shift8，可加和）。未知名如实抛。"""
+    if not mods:
+        return 0
+    if isinstance(mods, str):
+        mods = re.split(r"[+,\s]+", mods.strip())
+    mask = 0
+    for m in mods:
+        k = str(m).strip().lower()
+        if not k:
+            continue
+        if k not in MODIFIERS:
+            raise ValueError("未知修饰键 %r（有：%s）"
+                             % (m, "/".join(MODIFIERS)))
+        mask |= MODIFIERS[k]
+    return mask
+
+
+def key_events(key, modifiers=0, text=None):
+    """构造一个键的 CDP 事件序列（纯函数，可单测）。
+    可见字符（有 text 或普通可打印字符）= rawKeyDown+char+keyUp 三连
+    （rawKeyDown 触发快捷键/页面键处理，char 产生实际输入——只发其一
+    必缺半边）；控制键 = keyDown+keyUp；组合键 = modifiers 位掩码进
+    每个事件 + 首尾补 modifier 键的按住序。"""
+    mods = _parse_modifiers(modifiers) if not isinstance(modifiers, int) \
+        else int(modifiers)
+    k = str(key).strip()
+    lname = k.lower()
+    seq = []
+    mod_downs = [mk for mk, _ in _MODIFIER_KEYS.items()
+                 if mods & MODIFIERS[mk]]
+    # 按住序：先按下所有修饰键
+    for mk in mod_downs:
+        name, vk = _MODIFIER_KEYS[mk]
+        seq.append({"type": "keyDown", "key": name,
+                    "code": name + "Left" if name != "Meta" else "MetaLeft",
+                    "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+                    "modifiers": mods})
+    if lname in _SPECIAL_KEYS:
+        vk, code = _SPECIAL_KEYS[lname]
+        ev = {"type": "keyDown", "key": k if len(k) > 1 else lname,
+              "code": code, "windowsVirtualKeyCode": vk,
+              "nativeVirtualKeyCode": vk, "modifiers": mods}
+        seq.append(ev)
+        seq.append(dict(ev, type="keyUp"))
+    elif len(k) == 1:
+        ch = text if text is not None else k
+        vk = ord(k.upper())
+        base = {"key": k, "code": "Key%s" % k.upper(),
+                "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+                "modifiers": mods}
+        seq.append(dict(base, type="rawKeyDown"))
+        seq.append(dict(base, type="char", text=ch,
+                        unmodifiedText=ch))
+        seq.append(dict(base, type="keyUp"))
+    else:
+        # 具名键不在表内：透传名字（CDP 接受 UI Events key 名）
+        seq.append({"type": "keyDown", "key": k, "modifiers": mods})
+        seq.append({"type": "keyUp", "key": k, "modifiers": mods})
+    # 释放序：修饰键回弹
+    for mk in reversed(mod_downs):
+        name, vk = _MODIFIER_KEYS[mk]
+        seq.append({"type": "keyUp", "key": name,
+                    "code": name + "Left" if name != "Meta" else "MetaLeft",
+                    "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+                    "modifiers": mods})
+    return seq
+
+
+def key_combo_events(text):
+    """连续文本/序列的键击流：字符串逐字符 key_events（支持 "ctrl+s"
+    形态的具名组合——'+' 切分后 modifiers 前缀 + 单主键）。"""
+    out = []
+    for ch in str(text):
+        if ch == "+" and False:  # 占位：'+ ' 字符本身走 else 分支
+            continue
+        out.extend(key_events(ch))
+    return out
+
+
+def drag_events(x1, y1, x2, y2, steps=8, button="left"):
+    """拖拽 = mousePressed -> 插值 mouseMoved×steps -> mouseReleased
+    （含按下/释放的 clickCount 与 buttons 位）。纯函数可单测。"""
+    x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
+    steps = max(1, int(steps))
+    seq = [{"type": "mouseMoved", "x": x1, "y": y1, "modifiers": 0}]
+    seq.append({"type": "mousePressed", "x": x1, "y": y1,
+                "button": button, "buttons": 1, "clickCount": 1,
+                "modifiers": 0})
+    for i in range(1, steps + 1):
+        t = i / steps
+        seq.append({"type": "mouseMoved",
+                    "x": round(x1 + (x2 - x1) * t, 2),
+                    "y": round(y1 + (y2 - y1) * t, 2),
+                    "buttons": 1, "modifiers": 0})
+    seq.append({"type": "mouseReleased", "x": x2, "y": y2,
+                "button": button, "buttons": 0, "clickCount": 1,
+                "modifiers": 0})
+    return seq
+
+
+def dispatch(ws_url, events, timeout=30):
+    """向 ws_url 逐条派发 Input.dispatch* 命令（复用 call 的消息级
+    往返——每事件一次连接略重但批1 语义最简；返回成功条数）。
+    路由：keyDown/keyUp/rawKeyDown/char → dispatchKeyEvent；其余
+    （mousePressed/mouseReleased/mouseMoved/mouseWheel）→
+    dispatchMouseEvent。"""
+    _KEY_TYPES = ("keyDown", "keyUp", "rawKeyDown", "char")
+    n = 0
+    for ev in events:
+        method = ("Input.dispatchKeyEvent" if ev.get("type") in _KEY_TYPES
+                  else "Input.dispatchMouseEvent")
+        call(ws_url, method, ev, timeout)
+        n += 1
+    return n
+
+
+def ws_for(port, index=0):
+    """端口 -> 第 index 个 page 标签的 ws（tabs+过滤的公共化）。"""
+    pages = [t for t in tabs(port)
+             if not t["url"].startswith(("devtools://", "chrome://"))]
+    if not pages:
+        raise RuntimeError("该端口没有可操作的 page 标签页")
+    return pages[max(0, min(int(index), len(pages) - 1))]["ws"]
+
+
 def shot(port, ws=None, index=0, fullpage=True):
     """对第 index 个 page 标签截图 -> (png_bytes, info)。
     fullpage=captureBeyondViewport（Chrome 90+，视口外也截）。"""

@@ -420,7 +420,9 @@ def test_mcp_tool_schemas():
     assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
                                   "ashot_annotate", "ashot_fonts",
                                   "ashot_show", "ashot_cdp_tabs",
-                                  "ashot_cdp_shot"}
+                                  "ashot_cdp_shot", "ashot_cdp_key",
+                                  "ashot_cdp_wheel", "ashot_cdp_click",
+                                  "ashot_cdp_drag"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
@@ -441,6 +443,19 @@ def test_mcp_tool_schemas():
     cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
     assert cs["required"] == []
     assert set(cs["properties"]) == {"port", "index", "fullpage", "out"}
+    for nm, req, props in (
+            ("ashot_cdp_key", ["key"],
+             {"key", "text", "modifiers", "port", "index", "ws"}),
+            ("ashot_cdp_wheel", [],
+             {"dx", "dy", "x", "y", "port", "index", "ws"}),
+            ("ashot_cdp_click", ["x", "y"],
+             {"x", "y", "button", "port", "index", "ws"}),
+            ("ashot_cdp_drag", ["x1", "y1", "x2", "y2"],
+             {"x1", "y1", "x2", "y2", "steps", "button", "port", "index",
+              "ws"})):
+        ic = mcp_mod.TOOLS[nm]["inputSchema"]
+        assert ic["required"] == req, (nm, ic["required"])
+        assert set(ic["properties"]) == props, nm
 
 
 # ---------- v0.1.6 渐变实心箭头 + 圆角矩形 ----------
@@ -1143,3 +1158,120 @@ def test_cdp_find_port_from_profile(tmp_path):
         raise AssertionError("坏内容未报错")
     except RuntimeError:
         pass
+
+
+# ---------- v0.2.0 §4.2.2 输入事件注入 ----------
+
+def test_key_events_sequences():
+    """键序列构造（审计规格 §4.2.2）：可见字符 rawKeyDown+char+keyUp
+    三连；控制键 keyDown+keyUp；组合键 modifiers 位+按住/回弹序。"""
+    from ashot import cdp as cdp_mod
+    # 可见字符三连，char 带 text
+    seq = cdp_mod.key_events("a")
+    assert [e["type"] for e in seq] == ["rawKeyDown", "char", "keyUp"]
+    assert seq[1]["text"] == "a"
+    assert seq[0]["windowsVirtualKeyCode"] == 65
+    # 控制键双发
+    seq = cdp_mod.key_events("enter")
+    assert [e["type"] for e in seq] == ["keyDown", "keyUp"]
+    assert seq[0]["windowsVirtualKeyCode"] == 13
+    # 组合键：ctrl+s = ctrl 按下 + s(rawDown/char/keyUp, modifiers=2)
+    #          + ctrl 回弹
+    seq = cdp_mod.key_events("s", "ctrl")
+    types = [e["type"] for e in seq]
+    assert types == ["keyDown", "rawKeyDown", "char", "keyUp", "keyUp"]
+    assert seq[0]["key"] == "Control" and seq[0]["modifiers"] == 2
+    assert seq[-1]["key"] == "Control"
+    assert seq[1]["modifiers"] == 2
+    # modifiers 位掩码
+    assert cdp_mod._parse_modifiers("ctrl+shift") == 10
+    assert cdp_mod._parse_modifiers(["alt"]) == 1
+    try:
+        cdp_mod._parse_modifiers("bogus")
+        raise AssertionError("未知修饰键未报错")
+    except ValueError:
+        pass
+
+
+def test_drag_events_sequence():
+    """拖拽序列（审计 §4.2.2）：moved(起始) → pressed → 插值 moved×N
+    （buttons=1）→ released（buttons=0）。"""
+    from ashot import cdp as cdp_mod
+    seq = cdp_mod.drag_events(10, 10, 110, 60, steps=4)
+    types = [e["type"] for e in seq]
+    assert types == ["mouseMoved", "mousePressed",
+                     "mouseMoved", "mouseMoved", "mouseMoved", "mouseMoved",
+                     "mouseReleased"]
+    assert seq[2]["x"] == 35 and seq[2]["y"] == 22.5   # 插值 1/4
+    for e in seq[2:6]:
+        assert e["buttons"] == 1
+    assert seq[-1]["buttons"] == 0
+    assert seq[-1]["x"] == 110 and seq[-1]["y"] == 60
+
+
+def test_cdp_dispatch_with_stub():
+    """dispatch 走 WS 桩真实派发：三条 mouse 事件全部送达（消息级
+    往返计数）。"""
+    from ashot import cdp as cdp_mod
+    replies = [(0x1, json.dumps({"id": 1, "result": {}}).encode(), True)
+               ] * 4
+    # dispatch 每事件一次独立 call（=独立连接），桩循环 accept
+    sent = []
+
+    class _Multi(_FakeWsServer):
+        def _serve(self):
+            import struct
+            import time
+            conn, _ = self._srv.accept()
+            try:
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    buf += conn.recv(4096)
+                head, _, rest = buf.partition(b"\r\n\r\n")
+                key = ""
+                for ln in head.split(b"\r\n"):
+                    if ln.lower().startswith(b"sec-websocket-key:"):
+                        key = ln.split(b":", 1)[1].strip().decode()
+                conn.sendall(("HTTP/1.1 101 Switching Protocols\r\n"
+                              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                              "Sec-WebSocket-Accept: %s\r\n\r\n"
+                              % self.handshake_key(key)).encode())
+                data = rest
+                while len(data) < 2:
+                    data += conn.recv(4096)
+                h, data = data[:2], data[2:]
+                ln = h[1] & 0x7F
+                if ln == 126:
+                    while len(data) < 2:
+                        data += conn.recv(4096)
+                    ln = struct.unpack(">H", data[:2])[0]
+                    data = data[2:]
+                elif ln == 127:
+                    while len(data) < 8:
+                        data += conn.recv(4096)
+                    ln = struct.unpack(">Q", data[:8])[0]
+                    data = data[8:]
+                need = 4 + ln
+                while len(data) < need:
+                    data += conn.recv(4096)
+                sent.append(data[4:4 + ln])
+                opcode, body, fin = self._responses[0]
+                conn.sendall(bytes([(0x80 if fin else 0) | opcode,
+                                    len(body)]) + body)
+                time.sleep(0.05)
+            finally:
+                conn.close()
+                self._srv.close()
+
+    srv = _Multi(replies)
+
+    import threading
+    threads = []
+    for _ in range(4):
+        threads.append(srv.serve_once())
+    n = cdp_mod.dispatch("ws://127.0.0.1:%d/devtools/page/z" % srv.port,
+                         cdp_mod.drag_events(0, 0, 40, 30, steps=1))
+    for t in threads:
+        t.join(timeout=5)
+    assert n == 4, n   # moved + pressed + moved + released
+    assert len(sent) == 4
