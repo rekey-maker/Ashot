@@ -17,6 +17,7 @@ import random
 import re
 import socket
 import struct
+import time
 import urllib.request
 
 MAX_WS_FRAME = 64 * 1024 * 1024   # 单帧上限（全页截图 base64 可达数 MB）
@@ -260,40 +261,69 @@ def _send_frame(sock, opcode, payload):
     sock.sendall(header + mask + masked)
 
 
-def call(ws_url, method, params=None, timeout=30):
-    """连接 ws_url 执行一条 CDP 命令，返回 result dict（消息级往返：
-    连接-命令-收应-关。批1 场景一次一张图，无需长连会话）。"""
-    m = re.match(r"^ws://([^/:]+):(\d+)(/.+)$", ws_url or "")
-    if not m:
-        raise RuntimeError("ws url 形态异常：%r（期望 ws://host:port/path）"
-                           % ws_url)
-    host, port, path = m.group(1), int(m.group(2)), m.group(3)
-    if host not in ("127.0.0.1", "localhost"):
-        raise RuntimeError("CDP 只允许连本机（127.0.0.1），拒绝：%r" % host)
-    sock, rest = _ws_connect(host, port, path, timeout)
-    try:
-        sock.settimeout(timeout)
-        _send_frame(sock, 0x1, json.dumps(
-            {"id": 1, "method": method, "params": params or {}}).encode())
+class Session(object):
+    """单连接多命令会话（v0.2.5）。
+
+    为什么要有它（2026-10-28 实测）：旧的 `call()` 是"一命令一连接"，
+    派发 30 个鼠标事件就握手 30 次。实测 17ms/事件——**全是重连开销**，
+    真实节奏完全由网络决定，缓动速度只体现在空间采样密度上，时间上
+    每个点间隔均匀得像机器。行为检测若看速度变化，这种均匀比真人更
+    可疑。改成一次握手、逐条收发，才能把"故意给每步睡多久"变成可控
+    参数（见 dispatch 的 `_delay_ms`）。
+    """
+
+    def __init__(self, ws_url, timeout=30):
+        m = re.match(r"^ws://([^/:]+):(\d+)(/.+)$", ws_url or "")
+        if not m:
+            raise RuntimeError("ws url 形态异常：%r（期望 "
+                               "ws://host:port/path）" % ws_url)
+        host, port, path = m.group(1), int(m.group(2)), m.group(3)
+        if host not in ("127.0.0.1", "localhost"):
+            raise RuntimeError("CDP 只允许连本机（127.0.0.1），拒绝：%r" % host)
+        self.sock, self._buf = _ws_connect(host, port, path, timeout)
+        self.sock.settimeout(timeout)
+        self._id = 0
+        self.timeout = timeout
+
+    def command(self, method, params=None):
+        """发一条命令并等它自己的应答（id 递增，事件帧跳过）。"""
+        self._id += 1
+        mid = self._id
+        _send_frame(self.sock, 0x1, json.dumps(
+            {"id": mid, "method": method, "params": params or {}}).encode())
         # buf 线穿（审计 P1-1）：握手 rest 与每轮余 buf 必须传回——
         # 服务端有权把事件帧与应答帧合并在一个 TCP 段，丢弃即丢应答
-        buf = rest
         while True:
-            opcode, payload, buf = _recv_frame(sock, buf)
+            opcode, payload, self._buf = _recv_frame(self.sock, self._buf)
             if opcode != 0x1:
-                continue   # 事件帧（非文本应答）——批1 单命令场景跳过
+                continue          # 事件帧（不含 id），跳过
             msg = json.loads(payload.decode("utf-8", "replace"))
-            if msg.get("id") != 1:
+            if msg.get("id") != mid:
                 continue
             if "error" in msg:
                 raise RuntimeError("CDP %s 失败：%s"
                                    % (method, json.dumps(msg["error"])[:200]))
             return msg.get("result", {})
-    finally:
+
+    def close(self):
         try:
-            sock.close()
+            self.sock.close()
         except OSError:
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+
+def call(ws_url, method, params=None, timeout=30):
+    """连接 ws_url 执行一条 CDP 命令，返回 result dict（连接-命令-收应-关）。
+    单命令场景用它；成批派发请用 Session（省掉每事件一次握手）。"""
+    with Session(ws_url, timeout) as s:
+        return s.command(method, params)
 
 
 # ---------- 顶层动作 ----------
@@ -481,96 +511,167 @@ def _press_mask(button):
 
 # ---------- 人类化移动轨迹（v0.2.4，设计文档 §4.2.3） ----------
 
-def human_move_events(x1, y1, x2, y2, steps=0, jitter=2.0, seed=None):
-    """人类化鼠标轨迹：三次贝塞尔（随机控制点）+ 缓动速度曲线
-    （慢起-快中-慢收）+ 逐点微抖动（业界反检测共识配方，比人快——
-    无真实延时，CDP 派发间隔由网络决定）。
+def _trajectory(x1, y1, x2, y2, steps=0, jitter=2.0, seed=None,
+                constrained=False, max_perp=2.5):
+    """轨迹核心：返回 [(te, x, y)]，te 是缓动后的进度（0→1）。
 
-    steps=0 时按距离自适应（约 8~28 步）；jitter=每点随机偏移幅值
-    （CSS 像素，0 关闭）；seed 可复现（测试用）。首尾精确落点
-    （x2,y2 无抖动——点击必须准）。纯函数可单测。"""
+    constrained=False（自由移动）：三次贝塞尔 + 随机弓形偏移，制造弧线。
+    constrained=True（**受约束拖拽**，v0.2.5）：主轴线性插值，垂直方向
+    偏移被压在 ±max_perp 内，只保留微抖。
+
+    为什么必须分两档（2026-10-28 实测）：弓形偏移是按距离比例算的
+    （dist 的 10%~25%），自由移动时它是"像人"的特征；但**拖动滑块时
+    物体被约束在轨道上**，同样的弓形会让 520px 的水平拖拽纵向漂 50px
+    ——滑块直接脱轨。旧版 drag 复用了自由移动轨迹，这是硬伤。
+    """
     x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
     dist = math.hypot(x2 - x1, y2 - y1)
     if steps <= 0:
         steps = max(8, min(28, int(dist / 25)))
     rnd = random.Random(seed)
-    # 控制点：垂直于连线方向随机偏移（距离的 10%~25%），制造弧线
     if dist < 1:
-        ctl = [(x2, y2)]
+        return [(1.0, x2, y2)]
+    ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
+    # 垂直分量单位向量（屏幕坐标顺时针旋转 90°）
+    px, py = -uy, ux
+    if constrained:
+        # 受控：无弓形，垂直只留 max_perp 内的抖动
+        ctl = None
     else:
-        ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
         bow = dist * rnd.uniform(0.10, 0.25) * rnd.choice((-1, 1))
         c1 = (x1 + ux * dist * 0.33 - uy * bow,
               y1 + uy * dist * 0.33 + ux * bow)
         c2 = (x1 + ux * dist * 0.66 + uy * bow * 0.6,
               y1 + uy * dist * 0.66 - ux * bow * 0.6)
-        ctl = [c1, c2]
-    pts = []
-    n_ctl = len(ctl)
+        ctl = (c1, c2)
+    out = []
     for i in range(1, steps + 1):
         t = i / steps
         # 缓动：ease-in-out（慢起快中慢收）
         te = t * t * (3 - 2 * t)
-        if n_ctl == 2:
+        if constrained:
+            bx = x1 + (x2 - x1) * te
+            by = y1 + (y2 - y1) * te
+        else:
             u, v = te, 1 - te
             bx = (x1 * v * v * v + ctl[0][0] * 3 * u * v * v
                   + ctl[1][0] * 3 * u * u * v + x2 * u * u * u)
             by = (y1 * v * v * v + ctl[0][1] * 3 * u * v * v
                   + ctl[1][1] * 3 * u * u * v + y2 * u * u * u)
-        else:
-            bx, by = x2, y2
         # 抖动：中段大、两端收敛为 0（首尾必须精确落点）
         if i < steps:
             fade = math.sin(math.pi * te)   # 0→1→0
-            bx += rnd.uniform(-jitter, jitter) * fade
-            by += rnd.uniform(-jitter, jitter) * fade
-        pts.append((round(bx, 2), round(by, 2)))
-    return pts
+            if constrained:
+                # 垂直：只抽**一个标量**再乘单位垂向量，偏移严格垂直于
+                # 主轴且幅值 ≤ max_perp。若对 x/y 各抽一次，偏移方向会
+                # 跑偏、幅值上界变成 √2×max_perp（v0.2.5 修正）。
+                amp = min(jitter, max_perp)
+                perp = rnd.uniform(-max_perp, max_perp) * fade
+                bx += px * perp
+                by += py * perp
+                # 主轴：只沿运动方向微抖，不影响落点精度
+                along = rnd.uniform(-amp * 0.4, amp * 0.4) * fade
+                bx += ux * along
+                by += uy * along
+            else:
+                bx += rnd.uniform(-jitter, jitter) * fade
+                by += rnd.uniform(-jitter, jitter) * fade
+        out.append((te, round(bx, 2), round(by, 2)))
+    return out
+
+
+def human_move_events(x1, y1, x2, y2, steps=0, jitter=2.0, seed=None,
+                      max_perp=None):
+    """人类化鼠标轨迹：三次贝塞尔（随机控制点）+ 缓动速度曲线
+    （慢起-快中-慢收）+ 逐点微抖动（业界反检测共识配方）。
+
+    steps=0 时按距离自适应（约 8~28 步）；jitter=每点随机偏移幅值
+    （CSS 像素，0 关闭）；seed 可复现（测试用）。首尾精确落点
+    （x2,y2 无抖动——点击必须准）。纯函数可单测。
+
+    max_perp 给了就走**受约束**模式（垂直偏移上限，拖滑块用），
+    不给=自由弧线。"""
+    pts = _trajectory(x1, y1, x2, y2, steps=steps, jitter=jitter, seed=seed,
+                      constrained=max_perp is not None,
+                      max_perp=max_perp if max_perp is not None else 2.5)
+    return [(x, y) for _te, x, y in pts]
+
+
+def _spread_delays(tes, total_ms):
+    """把总时长按**缓动进度差分**分配到每一步（v0.2.5）。
+
+    为什么按 Δte 而不是按距离：速度曲线是设计出来的（慢-快-慢），
+    距离大的那步本来就该"走得久一点"才符合这个速度；按距离平均分配
+    等于把速度曲线拉成匀速，白设计了。Δte 才是真正的时间比例。
+    """
+    if not tes or total_ms <= 0:
+        return [0] * len(tes)
+    prev = 0.0
+    d = []
+    for te in tes:
+        d.append(max(0.0, te - prev))
+        prev = te
+    s = sum(d) or 1.0
+    return [total_ms * x / s for x in d]
 
 
 def move_along(ws_url, x1, y1, x2, y2, steps=0, jitter=2.0, seed=None,
-               buttons=0, timeout=30):
+               buttons=0, timeout=30, max_perp=None):
     """沿人类化轨迹派发 mouseMoved 序列。返回 (派发数, 终点)。"""
     pts = human_move_events(x1, y1, x2, y2, steps=steps, jitter=jitter,
-                            seed=seed)
-    n = 0
-    for x, y in pts:
-        call(ws_url, "Input.dispatchMouseEvent",
-             {"type": "mouseMoved", "x": x, "y": y,
-              "buttons": int(buttons), "modifiers": 0}, timeout)
-        n += 1
-    return n, pts[-1]
+                            seed=seed, max_perp=max_perp)
+    with Session(ws_url, timeout) as s:
+        for x, y in pts:
+            s.command("Input.dispatchMouseEvent",
+                      {"type": "mouseMoved", "x": x, "y": y,
+                       "buttons": int(buttons), "modifiers": 0})
+    return len(pts), pts[-1]
 
 
-def click_events(x, y, button="left", human=True, seed=None):
+def _approach_events(x, y, button, seed=None, approach_ms=None):
+    """靠近目标的事件序列（带节奏延时，v0.2.5）。
+
+    旧版 click 的接近轨迹是"瞬间铺完"的——空间上是曲线，时间上等于
+    瞬移。真人从 A 点移到 B 点要 100~300ms，这里补上。approach_ms=0
+    关闭延时（最省时间）。"""
+    traj = _trajectory(0, 0, x, y, seed=seed)
+    if approach_ms is None:
+        approach_ms = max(120.0, min(320.0, 90.0 + math.hypot(x, y) * 0.35))
+    delays = _spread_delays([t for t, _x, _y in traj], float(approach_ms))
+    return [{"type": "mouseMoved", "x": px, "y": py, "modifiers": 0,
+             "_delay_ms": delays[i]}
+            for i, (_t, px, py) in enumerate(traj)]
+
+
+def click_events(x, y, button="left", human=True, seed=None,
+                 approach_ms=None):
     """单击：human=True 先沿人类化轨迹移动到位再按下（v0.2.4）；
-    否则单步 moved（旧行为）。"""
+    否则单步 moved（旧行为）。approach_ms 控制靠近耗时（0=不等）。"""
     seq = []
     if human:
-        pts = human_move_events(0, 0, x, y, seed=seed)
-        for px, py in pts:
-            seq.append({"type": "mouseMoved", "x": px, "y": py,
-                        "modifiers": 0})
+        seq.extend(_approach_events(x, y, button, seed=seed,
+                                    approach_ms=approach_ms))
     else:
         seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
     seq.append({"type": "mousePressed", "x": x, "y": y,
                 "button": button, "buttons": _press_mask(button),
-                "clickCount": 1, "modifiers": 0})
+                "clickCount": 1, "modifiers": 0,
+                "_delay_ms": 20.0})
     seq.append({"type": "mouseReleased", "x": x, "y": y,
                 "button": button, "buttons": 0, "clickCount": 1,
-                "modifiers": 0})
+                "modifiers": 0,
+                "_delay_ms": 45.0})
     return seq
 
 
-def dblclick_events(x, y, button="left", count=2, human=True, seed=None):
+def dblclick_events(x, y, button="left", count=2, human=True, seed=None,
+                    approach_ms=None):
     """双击/多击：human=True 先人类化轨迹到位（v0.2.4）；False=单步
     moved 旧行为。clickCount 递增序列（浏览器据此合成 dblclick）。"""
     seq = []
     if human:
-        pts = human_move_events(0, 0, x, y, seed=seed)
-        for px, py in pts:
-            seq.append({"type": "mouseMoved", "x": px, "y": py,
-                        "modifiers": 0})
+        seq.extend(_approach_events(x, y, button, seed=seed,
+                                    approach_ms=approach_ms))
     else:
         seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
     seq.append({"type": "mousePressed", "x": x, "y": y,
@@ -582,32 +683,96 @@ def dblclick_events(x, y, button="left", count=2, human=True, seed=None):
     for i in range(2, max(2, int(count)) + 1):
         seq.append({"type": "mousePressed", "x": x, "y": y,
                     "button": button, "buttons": _press_mask(button),
-                    "clickCount": i, "modifiers": 0})
+                    "clickCount": i, "modifiers": 0,
+                    "_delay_ms": 40.0})   # 双击间距（真人 60~120ms 含处理）
         seq.append({"type": "mouseReleased", "x": x, "y": y,
                     "button": button, "buttons": 0, "clickCount": i,
-                    "modifiers": 0})
+                    "modifiers": 0,
+                    "_delay_ms": 25.0})
     return seq
 
 
+# 节奏档位（v0.2.5）：拖拽**总时长** = clamp(base + dist×per, lo, hi)，
+# 另配末端过冲幅度 over 与停顿 settle。真人拖滑块普遍 400~1200ms；
+# 验证码场景要再慢一档（过顺滑反而像脚本），故 captcha 档总时长
+# 900~2600ms 且末端有可见的"拖过头再拉回来"。
+# 全部可调——不想等就 pace=fast 或显式给 total_ms。
+PACES = {
+    "fast": {"base": 120.0, "per": 0.45, "lo": 150.0, "hi": 600.0,
+             "over": (0.0, 0.0), "settle": (15.0, 30.0)},
+    "normal": {"base": 260.0, "per": 1.10, "lo": 320.0, "hi": 1400.0,
+               "over": (1.0, 3.0), "settle": (30.0, 70.0)},
+    "captcha": {"base": 700.0, "per": 2.40, "lo": 900.0, "hi": 2600.0,
+                "over": (3.0, 6.0), "settle": (60.0, 130.0)},
+}
+
+
+def pace_total_ms(dist, pace="normal"):
+    """按档位估拖拽总时长（纯函数，可单测）。未知档位退化 normal。"""
+    p = PACES.get(str(pace).lower(), PACES["normal"])
+    return max(p["lo"], min(p["hi"], p["base"] + float(dist) * p["per"]))
+
+
 def drag_events(x1, y1, x2, y2, steps=0, button="left", human=True,
-                jitter=2.0, seed=None):
-    """拖拽：按下 → 移动（human=True 走人类化贝塞尔+抖动轨迹，v0.2.4
-    ——按住态 buttons=press；False=直线插值旧行为）→ 释放。"""
+                jitter=2.0, seed=None, constrained=True, max_perp=2.5,
+                total_ms=None, pace="normal"):
+    """拖拽：按下 → 移动 → 末端过冲回退 → 松手。
+
+    constrained=True（**缺省**，v0.2.5）：受约束轨迹——垂直偏移压在
+    ±max_perp 内，主轴照常走完。**拖滑块/拖进度条/拖分栏必须用这个**。
+    constrained=False：自由拖拽（画图、框选），保留贝塞尔弧线。
+    human=False：直线插值（旧行为，最省事但最像机器）。
+
+    节奏可三档调（用户 2026-10-28 要求：速度可调、验证码类慢点）：
+      · fast    ≈ 120 + dist×0.45 ms（150~600ms）
+      · normal  ≈ 260 + dist×1.10 ms（320~1400ms）
+      · captcha ≈ 700 + dist×2.40 ms（900~2600ms，末端过冲更明显）
+    显式 total_ms **优先**；total_ms=0 = 不睡（全速派发，旧行为）。
+    """
     x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
     press = _press_mask(button)
+    dist = math.hypot(x2 - x1, y2 - y1)
+    rnd = random.Random(seed)
+    p = PACES.get(str(pace).lower(), PACES["normal"])
     seq = [{"type": "mouseMoved", "x": x1, "y": y1, "modifiers": 0}]
     seq.append({"type": "mousePressed", "x": x1, "y": y1,
                 "button": button, "buttons": press, "clickCount": 1,
                 "modifiers": 0})
     if human:
-        dist = math.hypot(x2 - x1, y2 - y1)
-        steps = steps if steps and steps > 0 else max(
-            10, min(40, int(dist / 20)))
-        pts = human_move_events(x1, y1, x2, y2, steps=steps,
-                                jitter=min(jitter, 1.5), seed=seed)
-        for x, y in pts:
+        if not steps or steps <= 0:
+            # 旧版 max(10, dist/20) 短距离太稀疏（100px 只 13 个事件、
+            # 185ms，比真人快一倍）——下限提到 18 步
+            steps = (max(18, min(48, int(dist / 12))) if constrained
+                     else max(20, min(56, int(dist / 10))))
+        traj = _trajectory(x1, y1, x2, y2, steps=steps, jitter=jitter,
+                           seed=seed, constrained=constrained,
+                           max_perp=max_perp)
+        if total_ms is None:
+            total_ms = pace_total_ms(dist, pace) * rnd.uniform(0.88, 1.1)
+        # total_ms=0（或 timing=false）= 全速派发：**连按下停顿和末端
+        # settle 一起归零**，否则"不等"的承诺是假的
+        zero = (float(total_ms) <= 0)
+        delays = _spread_delays([t for t, _x, _y in traj], total_ms)
+        seq[-1]["_delay_ms"] = 0.0 if zero else rnd.uniform(40, 90)
+        for i, (te, x, y) in enumerate(traj):
             seq.append({"type": "mouseMoved", "x": x, "y": y,
-                        "buttons": press, "modifiers": 0})
+                        "buttons": press, "modifiers": 0,
+                        "_delay_ms": delays[i]})
+        # 末端过冲 + 回退（人类调整动作；幅度由档位给）
+        if not zero and dist > 20 and p["over"][1] > 0:
+            ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
+            ov = rnd.uniform(*p["over"])
+            seq.append({"type": "mouseMoved", "buttons": press,
+                        "x": round(x2 + ux * ov, 2),
+                        "y": round(y2 + uy * ov, 2), "modifiers": 0,
+                        "_delay_ms": rnd.uniform(*p["settle"])})
+            seq.append({"type": "mouseMoved", "buttons": press,
+                        "x": x2, "y": y2, "modifiers": 0,
+                        "_delay_ms": rnd.uniform(*p["settle"])})
+        else:
+            # 松手前的停顿
+            seq[-1]["_delay_ms"] = seq[-1].get("_delay_ms", 0) + \
+                (0.0 if zero else rnd.uniform(*p["settle"]))
     else:
         steps = max(1, int(steps or 8))
         for i in range(1, steps + 1):
@@ -630,29 +795,57 @@ def insert_text_events(text):
     return [{"type": "insertText", "text": str(text)}]
 
 
-def dispatch(ws_url, events, timeout=30):
-    """向 ws_url 逐条派发 Input.dispatch* / Input.insertText 命令（复用
-    call 的消息级往返——每事件一次连接略重但批1 语义最简；返回
-    (成功条数, unresolved keys)。
+def dispatch(ws_url, events, timeout=30, realtime=True, stats=None):
+    """向 ws_url 逐条派发 Input.dispatch* / Input.insertText 命令。
+
+    v0.2.5：**一次握手派发整批**（旧版每事件重连，实测 17ms/事件全是
+    握手开销）。事件上若带 `_delay_ms`（drag/click 的节奏提示），
+    realtime=True 时在派发该事件前睡相应毫秒——这样速度曲线在**时间**
+    上成立，而不只是空间采样密度。realtime=False 关掉延时（测试/极速）。
+
+    stats=一个 dict（可选）：写入 planned_ms（计划总等待）/ slept_ms
+    （实际睡了多久）/ clipped_ms（被上限夹掉的部分）。**别静默夹断**——
+    调用方需要知道节奏有没有被改动。
+
     路由：keyDown/keyUp/rawKeyDown/char → dispatchKeyEvent；insertText
     → **独立命令 Input.insertText**（v0.2.3 实弹修正：它不是
     dispatchKeyEvent 的事件类型）；其余（mousePressed/mouseReleased/
-    mouseMoved/mouseWheel）→ dispatchMouseEvent。"""
+    mouseMoved/mouseWheel）→ dispatchMouseEvent。
+    返回 (成功条数, unresolved keys)。"""
     _KEY_TYPES = ("keyDown", "keyUp", "rawKeyDown", "char")
     n = 0
     unresolved = []
-    for ev in events:
-        if ev.pop("unresolved", False) and ev.get("key") not in unresolved:
-            unresolved.append(ev.get("key"))
-        t = ev.get("type")
-        if t == "insertText":
-            call(ws_url, "Input.insertText",
-                 {"text": ev.get("text", "")}, timeout)
-        elif t in _KEY_TYPES:
-            call(ws_url, "Input.dispatchKeyEvent", ev, timeout)
-        else:
-            call(ws_url, "Input.dispatchMouseEvent", ev, timeout)
-        n += 1
+    planned = 0.0
+    slept = 0.0
+    clipped = 0.0
+    with Session(ws_url, timeout) as s:
+        for raw in events:
+            # 拷贝后再剥元信息：**就地 pop 会吃掉调用方的数据**，同一
+            # seq 重试时 _delay_ms/unresolved 全没了（节奏丢失、亮牌失效）
+            ev = dict(raw)
+            if ev.pop("unresolved", False) and \
+                    ev.get("key") not in unresolved:
+                unresolved.append(ev.get("key"))
+            d = float(ev.pop("_delay_ms", 0) or 0)
+            if realtime and d > 0:
+                planned += d
+                if d > 3000.0:
+                    clipped += d - 3000.0
+                    d = 3000.0
+                time.sleep(d / 1000.0)
+                slept += d
+            t = ev.get("type")
+            if t == "insertText":
+                s.command("Input.insertText", {"text": ev.get("text", "")})
+            elif t in _KEY_TYPES:
+                s.command("Input.dispatchKeyEvent", ev)
+            else:
+                s.command("Input.dispatchMouseEvent", ev)
+            n += 1
+    if isinstance(stats, dict):
+        stats["planned_ms"] = round(planned, 1)
+        stats["slept_ms"] = round(slept, 1)
+        stats["clipped_ms"] = round(clipped, 1)
     return n, unresolved
 
 
@@ -665,9 +858,77 @@ def ws_for(port, index=0):
     return pages[max(0, min(int(index), len(pages) - 1))]["ws"]
 
 
+def png_size(data):
+    """PNG 字节 -> (宽, 高)；非 PNG/太短返回 None。纯标准库读 IHDR
+    （第 16~24 字节），不引入 PIL（零依赖红线）。"""
+    try:
+        if not data or len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        w, h = struct.unpack(">II", bytes(data[16:24]))
+        return int(w), int(h)
+    except Exception:  # noqa: BLE001 —— 尺寸是收据的附加项，不该炸主流程
+        return None
+
+
+def evaluate(ws, js, timeout=30, await_promise=False, return_by_value=True):
+    """在标签页里执行一段 JS，返回 result 字典（v0.2.5）。
+
+    **安全红线：只发 Runtime.evaluate，绝不发 Runtime.enable。**
+    后者是字节系（acrawler）的明确检测点——一发即杀浏览器实例，
+    2026-10-28 在 awsearch 上反复验证过。裸 evaluate 是安全的。
+
+    js 形态：**函数体（内部 return）自动包 IIFE**；纯表达式直发。
+    为什么 auto-wrap（实弹教训）：Runtime.evaluate 的 expression 不认
+    裸 `return`——直接发"return 6*7"静默返回 undefined，画布注入这类
+    多语句函数体整体失效且无报错。含 return / 多语句就包
+    `(function(){ ... })()`，与 awsearch eval_js 同款约定。
+
+    异常会以 exceptionDetails 形式如实返回（调用方决定怎么报），不静默。
+    """
+    body = str(js)
+    if "return" in body or ";" in body or "\n" in body:
+        body = "(function(){ %s })()" % body
+    res = call(ws, "Runtime.evaluate", {
+        "expression": body,
+        "returnByValue": bool(return_by_value),
+        "awaitPromise": bool(await_promise),
+        "userGesture": True,
+    }, timeout)
+    return res
+
+
+def layout(ws, timeout=15):
+    """标签页布局信息 -> (视口 dict, dpr)。
+    Page.getLayoutMetrics（cssLayoutViewport = CSS 像素）+ devicePixelRatio。
+    用途：把**截图像素坐标**换算成**点击用的 CSS 坐标**——截图出图尺寸
+    与视口 CSS 尺寸常不相等（全页截图/高 dpr/宿主缩放都会放大），
+    目测截图坐标去点击必然落空（2026-10-28 实弹：1272×816 视口出图
+    2544×1632，按截图点\"点赞\"打在了视频画面上）。"""
+    m = call(ws, "Page.getLayoutMetrics", {}, timeout)
+    vp = m.get("cssLayoutViewport") or {}
+    out = {
+        "vw": int(vp.get("clientWidth") or 0),
+        "vh": int(vp.get("clientHeight") or 0),
+        "content_w": (m.get("contentSize") or {}).get("width"),
+        "content_h": (m.get("contentSize") or {}).get("height"),
+        "visual": m.get("cssVisualViewport") or {},
+    }
+    dpr = None
+    try:
+        r = call(ws, "Runtime.evaluate",
+                 {"expression": "window.devicePixelRatio",
+                  "returnByValue": True}, timeout)
+        dpr = (r.get("result") or {}).get("value")
+    except Exception:  # noqa: BLE001 —— dpr 是可选附加项
+        pass
+    return out, dpr
+
+
 def shot(port, ws=None, index=0, fullpage=True):
     """对第 index 个 page 标签截图 -> (png_bytes, info)。
-    fullpage=captureBeyondViewport（Chrome 90+，视口外也截）。"""
+    fullpage=captureBeyondViewport（Chrome 90+，视口外也截）。
+    info 含 w/h（PNG 真实像素）与 vw/vh/dpr/to_css——**截图坐标 ×
+    to_css = 点击用的 CSS 坐标**（详见 layout() 的说明）。"""
     if ws is None:
         pages = tabs(port)
         pages = [t for t in pages
@@ -684,4 +945,32 @@ def shot(port, ws=None, index=0, fullpage=True):
     if not data:
         raise RuntimeError("captureScreenshot 无数据（result=%r）"
                            % (list(res),))
-    return _b64.b64decode(data), {"ws": ws, "fullpage": bool(fullpage)}
+    png = _b64.b64decode(data)
+    info = {"ws": ws, "fullpage": bool(fullpage)}
+    sz = png_size(png)
+    if sz:
+        info["w"], info["h"] = sz[0], sz[1]
+    try:
+        lay, dpr = layout(ws)
+        info["vw"], info["vh"] = lay["vw"], lay["vh"]
+        if dpr:
+            info["dpr"] = dpr
+        if sz and lay["vw"] and lay["vh"]:
+            # **不能用 min(vw/w, vh/h)**——全页截图时 vh 是视口高而
+            # 图高是整页（content_h×dpr），两者相除会小一个数量级，按它
+            # 换算必然点空（v0.2.5 修正，第一版就踩了这个坑）。
+            if dpr:
+                to_css = 1.0 / float(dpr)
+            else:
+                # 拿不到 dpr 时退化：假设非全页截图，图宽 = 视口宽
+                to_css = lay["vw"] / float(sz[0])
+            info["to_css"] = round(to_css, 4)
+            info["hint"] = ("截图像素 × to_css = 点击用的 CSS 坐标；"
+                            "点空多半是没换算")
+    except Exception as e:  # noqa: BLE001 —— 布局信息是附加项，失败不吞主收据
+        # 但**必须留下痕迹**：收据缺 vw/vh/to_css 时调用方要能看出是"拿
+        # 不到"而不是"本来就没有"，否则会拿 w/h 当 CSS 坐标去点（必空）
+        info["layout_error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+        info["hint"] = ("视口信息获取失败（页签忙/已关/CDP 异常），"
+                        "to_css 缺失——不要直接用 w/h 当点击坐标")
+    return png, info

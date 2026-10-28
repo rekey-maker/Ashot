@@ -423,12 +423,16 @@ def test_mcp_tool_schemas():
                                   "ashot_cdp_shot", "ashot_cdp_key",
                                   "ashot_cdp_wheel", "ashot_cdp_click",
                                   "ashot_cdp_drag", "ashot_cdp_dblclick",
-                                  "ashot_cdp_type"}
+                                  "ashot_cdp_type", "ashot_cdp_view",
+                                  "ashot_cdp_eval"}
     for nm, props in (
             ("ashot_cdp_click", {"x", "y", "button", "human", "seed",
-                                 "port", "index", "ws"}),
+                                 "port", "index", "ws", "timing",
+                                 "verify"}),
             ("ashot_cdp_drag", {"x1", "y1", "x2", "y2", "steps", "button",
-                                "human", "seed", "port", "index", "ws"}),
+                                "human", "seed", "port", "index", "ws",
+                                          "pace", "total_ms", "constrained",
+                                          "max_perp", "timing", "verify"}),
             ("ashot_cdp_dblclick", {"x", "y", "button", "count", "human",
                                     "seed", "port", "index", "ws"})):
         assert set(mcp_mod.TOOLS[nm]["inputSchema"]["properties"]) == props, nm
@@ -459,17 +463,19 @@ def test_mcp_tool_schemas():
     tp = mcp_mod.TOOLS["ashot_cdp_type"]["inputSchema"]
     assert tp["required"] == ["text"]
     assert set(tp["properties"]) == {"text", "x", "y", "port", "index",
-                                     "ws"}
+                                     "ws", "verify"}
     for nm, req, props in (
             ("ashot_cdp_key", ["key"],
              {"key", "text", "modifiers", "port", "index", "ws"}),
             ("ashot_cdp_wheel", [],
              {"dx", "dy", "x", "y", "port", "index", "ws"}),
             ("ashot_cdp_click", ["x", "y"],
-             {"x", "y", "button", "human", "seed", "port", "index", "ws"}),
+             {"x", "y", "button", "human", "seed", "port", "index", "ws",
+              "timing", "verify"}),
             ("ashot_cdp_drag", ["x1", "y1", "x2", "y2"],
              {"x1", "y1", "x2", "y2", "steps", "button", "human", "seed",
-              "port", "index", "ws"})):
+              "port", "index", "ws", "pace", "total_ms", "constrained",
+              "max_perp", "timing", "verify"})):
         ic = mcp_mod.TOOLS[nm]["inputSchema"]
         assert ic["required"] == req, (nm, ic["required"])
         assert set(ic["properties"]) == props, nm
@@ -1247,11 +1253,26 @@ def test_key_events_full_coverage():
 
 def test_dispatch_strips_unresolved(monkeypatch):
     """dispatch 真实剥除 unresolved 并汇总（审计 P1-3：原测试 if False
-    死代码假锁——mutant 实测删 pop 全绿存活）。monkeypatch call 零网络。"""
+    死代码假锁——mutant 实测删 pop 全绿存活）。零网络桩。
+
+    v0.2.5 桩要挂两处：`_ws_connect`（Session 构造时的真实握手）与
+    `Session.command`（派发出口）。只挂 command 会在构造时 ConnectionRefused
+    ——连接发生在 __init__ 里，不在 command 里。"""
     from ashot import cdp as cdp_mod
     captured = []
-    monkeypatch.setattr(cdp_mod, "call",
-                        lambda ws, m, p, timeout=30: captured.append(p)
+
+    class _DummySock:
+        def close(self):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+    monkeypatch.setattr(cdp_mod, "_ws_connect",
+                        lambda host, port, path, timeout=15:
+                        (_DummySock(), b""))
+    monkeypatch.setattr(cdp_mod.Session, "command",
+                        lambda self, m, p=None: captured.append(p)
                         or {})
     seq = cdp_mod.key_events("MediaPlay")
     assert all(e.get("unresolved") for e in seq)
@@ -1262,21 +1283,56 @@ def test_dispatch_strips_unresolved(monkeypatch):
 
 
 def test_drag_events_sequence():
-    """拖拽序列（v0.2.4 human=True 缺省）：moved(起始) → pressed →
-    人类化轨迹 moved（buttons=press 掩码）→ released。"""
+    """拖拽序列（v0.2.5）：moved(起始) → pressed → 轨迹 moved（buttons=
+    press 掩码）→ 末端过冲 → 回退到终点 → released。
+
+    两档契约分别锁：
+      · constrained=True（**缺省**）= 受轨道约束：垂直偏移 ≤ max_perp，
+        不随距离放大（旧版会漂 50px → 拖滑块必脱轨）；
+      · constrained=False = 自由拖拽：保留贝塞尔弧度。
+    """
     from ashot import cdp as cdp_mod
+
+    def off_line(e):
+        # 直线 y = 10 + (x-10)*0.5
+        return abs(e["y"] - (10 + (e["x"] - 10) * 0.5))
+
+    # ① 缺省 = 受约束（拖滑块/进度条要的就是这个）
     seq = cdp_mod.drag_events(10, 10, 110, 60, steps=4, seed=7)
     types = [e["type"] for e in seq]
     assert types.count("mousePressed") == 1
     assert types[-1] == "mouseReleased"
     moved = [e for e in seq if e["type"] == "mouseMoved"]
     assert len(moved) >= 5   # 起始 + 轨迹
-    # 人类化轨迹：中段点偏离直线（贝塞尔+抖动），但终点精确
-    def off_line(e):
-        # 直线 y = 10 + (x-10)*0.5
-        return abs(e["y"] - (10 + (e["x"] - 10) * 0.5))
-    assert any(off_line(e) > 1.0 for e in moved[1:-1]), "轨迹毫无弧度"
+    # 纵向漂移必须被夹住，且与距离无关
+    assert max(off_line(e) for e in moved) <= 3.0, "受约束模式仍在纵向漂"
+    # 末端过冲 + 回到精确终点
     assert moved[-1]["x"] == 110 and moved[-1]["y"] == 60, "终点未精确落点"
+
+    # ② 长距离：漂移不放大（旧版 520px 会漂 50px）
+    seq = cdp_mod.drag_events(80, 200, 600, 200, seed=11)
+    mv = [e for e in seq if e["type"] == "mouseMoved"]
+    assert max(abs(e["y"] - 200) for e in mv) <= 3.0, "长距离漂移放大了"
+    assert mv[-1]["x"] == 600 and mv[-1]["y"] == 200
+
+    # ③ 自由拖拽：弧度契约保留
+    seq = cdp_mod.drag_events(10, 10, 110, 60, steps=4, seed=7,
+                              constrained=False)
+    moved = [e for e in seq if e["type"] == "mouseMoved"]
+    assert any(off_line(e) > 1.0 for e in moved[1:-1]), "自由轨迹毫无弧度"
+    assert moved[-1]["x"] == 110 and moved[-1]["y"] == 60, "自由模式终点错"
+
+    # ④ 节奏档位：captcha 比 normal 慢，normal 比 fast 慢
+    st = {"fast": {}, "normal": {}, "captcha": {}}
+    for pc in st:
+        s = cdp_mod.drag_events(0, 0, 300, 0, seed=3, pace=pc)
+        st[pc]["steps"] = sum(1 for e in s if e["type"] == "mouseMoved")
+        st[pc]["ms"] = round(sum(float(e.get("_delay_ms", 0)) for e in s), 1)
+    assert st["captcha"]["ms"] > st["normal"]["ms"] > st["fast"]["ms"], st
+    # total_ms 显式优先于 pace
+    s = cdp_mod.drag_events(0, 0, 300, 0, seed=3, pace="captcha", total_ms=0)
+    assert sum(float(e.get("_delay_ms", 0)) for e in s) == 0, "total_ms=0 应全速"
+
     pressed = [e for e in seq if e["type"] == "mousePressed"][0]
     assert pressed["buttons"] == 1
     # 中键拖拽 buttons 位（审计 P2-1：press 掩码按 button 查表，middle=4）
@@ -1316,8 +1372,19 @@ def test_dispatch_insert_text_route(monkeypatch):
     不得再进 dispatchKeyEvent（实弹曾报 Unexpected event type）。"""
     from ashot import cdp as cdp_mod
     calls = []
-    monkeypatch.setattr(cdp_mod, "call",
-                        lambda ws, m, p, timeout=30:
+
+    class _DummySock:
+        def close(self):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+    monkeypatch.setattr(cdp_mod, "_ws_connect",
+                        lambda host, port, path, timeout=15:
+                        (_DummySock(), b""))
+    monkeypatch.setattr(cdp_mod.Session, "command",
+                        lambda self, m, p=None:
                         calls.append((m, p)) or {})
     n, unresolved = cdp_mod.dispatch(
         "ws://127.0.0.1:1/x", cdp_mod.insert_text_events("表文"))
@@ -1359,12 +1426,14 @@ def test_dblclick_and_insert_text():
 
 
 def test_cdp_dispatch_with_stub():
-    """dispatch 走 WS 桩真实派发：三条 mouse 事件全部送达（消息级
-    往返计数）。"""
+    """dispatch 走 WS 桩真实派发：**一次握手、整批事件全部送达**。
+
+    v0.2.5 把 dispatch 从"每事件一次独立连接"改成会话化（省掉每事件
+    一次握手）。桩因此必须：① 在**同一条连接**上循环收发；② **回显请求
+    id**——桩若固定回 id=1，Session 的 id 递增匹配会一直等第二条的应答
+    直到超时（这就是"卡住"的根源，不是网络慢）。
+    """
     from ashot import cdp as cdp_mod
-    replies = [(0x1, json.dumps({"id": 1, "result": {}}).encode(), True)
-               ] * 4
-    # dispatch 每事件一次独立 call（=独立连接），桩循环 accept
     sent = []
 
     class _Multi(_FakeWsServer):
@@ -1375,54 +1444,80 @@ def test_cdp_dispatch_with_stub():
             try:
                 buf = b""
                 while b"\r\n\r\n" not in buf:
-                    buf += conn.recv(4096)
+                    c = conn.recv(4096)
+                    if not c:
+                        return
+                    buf += c
                 head, _, rest = buf.partition(b"\r\n\r\n")
                 key = ""
                 for ln in head.split(b"\r\n"):
                     if ln.lower().startswith(b"sec-websocket-key:"):
                         key = ln.split(b":", 1)[1].strip().decode()
                 conn.sendall(("HTTP/1.1 101 Switching Protocols\r\n"
-                              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                              "Upgrade: websocket\r\n"
+                              "Connection: Upgrade\r\n"
                               "Sec-WebSocket-Accept: %s\r\n\r\n"
                               % self.handshake_key(key)).encode())
                 data = rest
-                while len(data) < 2:
-                    data += conn.recv(4096)
-                h, data = data[:2], data[2:]
-                ln = h[1] & 0x7F
-                if ln == 126:
+                while True:
                     while len(data) < 2:
-                        data += conn.recv(4096)
-                    ln = struct.unpack(">H", data[:2])[0]
-                    data = data[2:]
-                elif ln == 127:
-                    while len(data) < 8:
-                        data += conn.recv(4096)
-                    ln = struct.unpack(">Q", data[:8])[0]
-                    data = data[8:]
-                need = 4 + ln
-                while len(data) < need:
-                    data += conn.recv(4096)
-                sent.append(data[4:4 + ln])
-                opcode, body, fin = self._responses[0]
-                conn.sendall(bytes([(0x80 if fin else 0) | opcode,
-                                    len(body)]) + body)
-                time.sleep(0.05)
+                        c = conn.recv(4096)
+                        if not c:
+                            return
+                        data += c
+                    h, data = data[:2], data[2:]
+                    ln = h[1] & 0x7F
+                    if ln == 126:
+                        while len(data) < 2:
+                            data += conn.recv(4096)
+                        ln = struct.unpack(">H", data[:2])[0]
+                        data = data[2:]
+                    elif ln == 127:
+                        while len(data) < 8:
+                            data += conn.recv(4096)
+                        ln = struct.unpack(">Q", data[:8])[0]
+                        data = data[8:]
+                    need = 4 + ln
+                    while len(data) < need:
+                        c = conn.recv(4096)
+                        if not c:
+                            return
+                        data += c
+                    # 客户端帧：4 字节掩码 + masked payload——解析前必须
+                    # 去掩码（原桩只 collect 不解析所以没踩这坑）
+                    mask, mp = data[:4], data[4:4 + ln]
+                    payload = bytes(mp[i] ^ mask[i % 4]
+                                    for i in range(ln))
+                    data = data[4 + ln:]
+                    sent.append(payload)
+                    # 回显 id：会话化之后每条命令的 id 都不同
+                    try:
+                        rid = json.loads(payload.decode("utf-8")).get("id")
+                    except Exception:
+                        rid = 1
+                    body = json.dumps({"id": rid, "result": {}}).encode()
+                    conn.sendall(bytes([0x81, len(body)]) + body)
+                    time.sleep(0.05)
             finally:
                 conn.close()
                 self._srv.close()
 
-    srv = _Multi(replies)
+    srv = _Multi([])      # 响应由 _serve 按请求 id 动态生成
 
     import threading
-    threads = []
-    for _ in range(4):
-        threads.append(srv.serve_once())
+    threads = [srv.serve_once() for _ in range(1)]
     n, unresolved = cdp_mod.dispatch(
         "ws://127.0.0.1:%d/devtools/page/z" % srv.port,
-        cdp_mod.drag_events(0, 0, 40, 30, steps=1))
+        cdp_mod.drag_events(0, 0, 40, 30, steps=1, total_ms=0))
     for t in threads:
         t.join(timeout=5)
-    assert n == 4, n   # moved + pressed + moved + released
+    # 起始 moved + pressed + 轨迹 moved×steps（total_ms=0 时无过冲）+
+    # released
+    assert n == 4, n
     assert unresolved == []
     assert len(sent) == 4
+    # 派发出去的事件里不得残留内部元信息字段
+    for raw in sent:
+        ev = json.loads(raw.decode("utf-8"))
+        assert "_delay_ms" not in ev, ev
+        assert "unresolved" not in ev, ev

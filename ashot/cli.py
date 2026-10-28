@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from . import __version__, annotate, annotate_gdi, capture, cdp, fonts, output, show
 
@@ -123,7 +124,12 @@ def _cmd_cdp_shot(a):
 
 
 def _resolve_cdp_ws(a):
-    """cdp-* 输入命令公共解析：--port/--ws -> ws url（discover 兜底）。"""
+    """cdp-* 输入命令公共解析：--port/--ws -> ws url（discover 兜底）。
+
+    **安全边界（v0.2.5）**：discover 命中多个调试端口时拒绝猜——静默
+    取第一个会把鼠标事件打到完全不相干的浏览器实例上（实测曾把 ALrec
+    的 9225 当目标）。此时列出各实例首个页签让人挑，显式带 --port 重跑。
+    """
     if getattr(a, "ws", None):
         return a.ws
     port = getattr(a, "port", None)
@@ -131,6 +137,23 @@ def _resolve_cdp_ws(a):
         disc = cdp.discover()
         if not disc["ports"]:
             print("✗ %s" % disc["hint"], file=sys.stderr)
+            return None
+        if len(disc["ports"]) > 1:
+            print("✗ 发现 %d 个调试浏览器实例，不安全猜——请用 "
+                  "--port 指定目标：" % len(disc["ports"]), file=sys.stderr)
+            for p in disc["ports"]:
+                try:
+                    ts = cdp.tabs(int(p))
+                    head = ts[0] if ts else None
+                    if head:
+                        print("  --port %s  %s | %s"
+                              % (p, (head.get("title") or "")[:40],
+                                 (head.get("url") or "")[:60]),
+                              file=sys.stderr)
+                        continue
+                except Exception:  # noqa: BLE001 —— 标注失败不影响报错本身
+                    pass
+                print("  --port %s  （无法读取页签）" % p, file=sys.stderr)
             return None
         port = disc["ports"][0]
         print("discovered port: %d" % port, file=sys.stderr)
@@ -181,8 +204,22 @@ def _cmd_cdp_click(a):
             return 1
         seq = cdp.click_events(a.x, a.y, button=a.button,
                                human=not a.teleport, seed=a.seed)
-        n, _ = cdp.dispatch(ws, seq)
+        t0 = time.time()
+        n, _ = cdp.dispatch(ws, seq,
+                            realtime=not getattr(a, "no_timing", False))
         print("dispatched: %d" % n)
+        print("seconds: %.2f" % (time.time() - t0))
+        if getattr(a, "verify", ""):
+            try:
+                r = cdp.evaluate(ws, a.verify)
+                exc = r.get("exceptionDetails")
+                print("verify: %s" % json.dumps(
+                    {"exception": str(exc)[:200]} if exc
+                    else (r.get("result") or {}).get("value"),
+                    ensure_ascii=False))
+            except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+                print("⚠ verify 失败：%s: %s" % (type(e).__name__, e),
+                      file=sys.stderr)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -194,11 +231,40 @@ def _cmd_cdp_drag(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
-        seq = cdp.drag_events(a.x1, a.y1, a.x2, a.y2,
-                              steps=a.steps, button=a.button,
-                              human=not a.teleport, seed=a.seed)
-        n, _ = cdp.dispatch(ws, seq)
+        seq = cdp.drag_events(
+            a.x1, a.y1, a.x2, a.y2,
+            steps=a.steps, button=a.button, human=not a.teleport,
+            seed=a.seed, pace=getattr(a, "pace", "normal") or "normal",
+            total_ms=(None if getattr(a, "total_ms", None) in (None, "")
+                      else float(a.total_ms)),
+            constrained=not getattr(a, "free", False),
+            max_perp=float(getattr(a, "max_perp", 2.5) or 2.5))
+        stats = {}
+        t0 = time.time()
+        n, _ = cdp.dispatch(ws, seq,
+                            realtime=not getattr(a, "no_timing", False),
+                            stats=stats)
         print("dispatched: %d" % n)
+        print("seconds: %.2f" % (time.time() - t0))
+        print("pace: %s  constrained: %s"
+              % (getattr(a, "pace", "normal") or "normal",
+                 not getattr(a, "free", False)))
+        if stats.get("planned_ms"):
+            print("planned_ms: %s" % stats["planned_ms"])
+        if stats.get("clipped_ms"):
+            print("clipped_ms: %s  ⚠ 等待被 3s 上限夹断"
+                  % stats["clipped_ms"])
+        if getattr(a, "verify", ""):
+            try:
+                r = cdp.evaluate(ws, a.verify)
+                exc = r.get("exceptionDetails")
+                print("verify: %s" % json.dumps(
+                    {"exception": str(exc)[:200]} if exc
+                    else (r.get("result") or {}).get("value"),
+                    ensure_ascii=False))
+            except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+                print("⚠ verify 失败：%s: %s" % (type(e).__name__, e),
+                      file=sys.stderr)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -242,6 +308,60 @@ def _cmd_cdp_type(a):
             cdp.insert_text_events(a.text)
         n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
+        if getattr(a, "verify", ""):
+            try:
+                r = cdp.evaluate(ws, a.verify)
+                exc = r.get("exceptionDetails")
+                print("verify: %s" % json.dumps(
+                    {"exception": str(exc)[:200]} if exc
+                    else (r.get("result") or {}).get("value"),
+                    ensure_ascii=False))
+            except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+                print("⚠ verify 失败：%s: %s" % (type(e).__name__, e),
+                      file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_view(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        lay, dpr = cdp.layout(ws, timeout=int(getattr(a, "timeout", 15) or 15))
+        rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
+               "content_w": lay["content_w"], "content_h": lay["content_h"],
+               "dpr": dpr}
+        if lay["vw"] and lay["vh"] and dpr:
+            rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
+                           % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_eval(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        res = cdp.evaluate(ws, a.js, timeout=int(getattr(a, "timeout", 30) or 30),
+                           await_promise=bool(getattr(a, "await", False)))
+        exc = res.get("exceptionDetails")
+        if exc:
+            rec = {"ok": False,
+                   "exception": ((exc.get("exception") or {}).get("description")
+                                 or exc.get("text") or str(exc)[:200])}
+        else:
+            obj = res.get("result") or {}
+            rec = {"ok": True, "value": obj.get("value")}
+            if obj.get("type") == "undefined":
+                rec["note"] = "undefined（多半传了表达式却没写 return）"
+        print(json.dumps(rec, ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -358,8 +478,15 @@ def main(argv=None):
                     choices=["left", "right", "middle"], help="键")
     cc.add_argument("--teleport", action="store_true",
                     help="跳过人类化移动轨迹（瞬移到位，旧行为）")
+    cc.add_argument("--no-timing", dest="no_timing", action="store_true",
+                    help="关掉靠近轨迹的节奏等待（human 轨迹每次约多耗 "
+                         "120~320ms；批处理时可关）")
     cc.add_argument("--seed", type=int, default=None,
                     help="轨迹随机种子（复现用；缺省每次随机）")
+    cc.add_argument("--verify", default="",
+                    help="点完后立刻求值的一段 JS，结果进收据"
+                         "（如 \"return document.title\"）——dispatched "
+                         "只代表事件发出，不代表生效")
     _add_common(cc)
     cc.set_defaults(func=_cmd_cdp_click)
 
@@ -369,12 +496,31 @@ def main(argv=None):
     cd.add_argument("x2", type=int, help="终点 x")
     cd.add_argument("y2", type=int, help="终点 y")
     cd.add_argument("--steps", type=int, default=0,
-                    help="轨迹步数（缺省按距离自适应 10~40）")
+                    help="轨迹步数（缺省按距离自适应：受约束 18~48 / "
+                         "自由 20~56）")
     cd.add_argument("--button", default="left",
                     choices=["left", "right", "middle"], help="键")
     cd.add_argument("--teleport", action="store_true",
                     help="退回直线插值（非人类化轨迹）")
     cd.add_argument("--seed", type=int, default=None, help="轨迹随机种子")
+    cd.add_argument("--pace", default="normal",
+                    choices=["fast", "normal", "captcha"],
+                    help="节奏档（v0.2.5）：fast≈150~600ms / "
+                         "normal≈320~1400ms / **captcha≈900~2600ms"
+                         "——过滑块验证码用 captcha**")
+    cd.add_argument("--total-ms", dest="total_ms", default=None,
+                    help="显式指定拖拽总时长（毫秒；优先于 --pace；"
+                         "给 0 = 全速不等）")
+    cd.add_argument("--free", action="store_true",
+                    help="自由拖拽（走贝塞尔弧线；缺省是受轨道约束的直线，"
+                         "拖滑块/进度条不要加这个）")
+    cd.add_argument("--max-perp", dest="max_perp", default=2.5,
+                    help="受约束模式下允许的垂直抖动上限（CSS 像素）")
+    cd.add_argument("--no-timing", dest="no_timing", action="store_true",
+                    help="关掉节奏等待（全速派发）")
+    cd.add_argument("--verify", default="",
+                    help="拖完后立刻求值的一段 JS，结果进收据"
+                         "（如 \"return document.title\"）")
     _add_common(cd)
     cd.set_defaults(func=_cmd_cdp_drag)
 
@@ -391,11 +537,27 @@ def main(argv=None):
     _add_common(cb)
     cb.set_defaults(func=_cmd_cdp_dblclick)
 
+    cv = sub.add_parser("cdp-view", help="CDP 标签页视口信息（vw/vh/dpr，v0.2.5）")
+    cv.add_argument("--timeout", type=int, default=15, help="CDP 超时（秒）")
+    _add_common(cv)
+    cv.set_defaults(func=_cmd_cdp_view)
+
+    ce = sub.add_parser("cdp-eval", help="CDP 标签页执行 JS 并取值（v0.2.5）")
+    ce.add_argument("js", help="JS：函数体（内部 return）或表达式")
+    ce.add_argument("--await", dest="await", action="store_true",
+                    help="await 返回的 Promise 再取值")
+    ce.add_argument("--timeout", type=int, default=30, help="CDP 超时（秒）")
+    _add_common(ce)
+    ce.set_defaults(func=_cmd_cdp_eval)
+
     ct2 = sub.add_parser("cdp-type", help="CDP 整段文本输入（填表，粘贴式不逐键，v0.2.3）")
     ct2.add_argument("text", help="整段文本（Input.insertText，不触发每键 keydown）")
     ct2.add_argument("--x", type=int, default=None,
                      help="可选：先点击该坐标聚焦输入框再输入")
     ct2.add_argument("--y", type=int, default=None, help="点击 y")
+    ct2.add_argument("--verify", default="",
+                     help='输完立刻求值的一段 JS，结果进收据（如 '
+                     '"return document.activeElement.value"）')
     _add_common(ct2)
     ct2.set_defaults(func=_cmd_cdp_type)
 

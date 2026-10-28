@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -163,12 +164,27 @@ def _show(image, title, out_dir, caption=None, width=1200):
 def _cdp_tabs(port=None):
     """列 CDP 浏览器（Chromium 家族）的 page 标签页（v0.2.0）。port=
     调试端口（缺省=discover：进程命令行→DevToolsActivePort→常见端口，
-    审计 P1-2）。无头/有头通吃、与 AI 宿主无关。收据 {ok, port,
-    tabs:[{title,url,id}]}。本工具需宿主重连后才会出现在工具表。"""
+    审计 P1-2）。无头/有头通吃、与 AI 宿主无关。
+    多实例时返回**分组结果**（groups:[{port, tabs}]），只读安全。
+    收据 {ok, port, tabs, groups}。本工具需宿主重连后才会出现在工具表。"""
     if port in (None, "", 0):
         disc = cdp.discover()
         if not disc["ports"]:
             raise RuntimeError(disc["hint"])
+        if len(disc["ports"]) > 1:
+            groups = []
+            for p in disc["ports"]:
+                try:
+                    groups.append({"port": int(p), "tabs": cdp.tabs(int(p))})
+                except Exception as e:  # noqa: BLE001 —— 单个读失败如实标记
+                    groups.append({"port": int(p), "error":
+                                   "%s: %s" % (type(e).__name__,
+                                               str(e)[:120])})
+            return json.dumps({"ok": True, "ambiguous": True,
+                               "port": None, "tabs": [],
+                               "groups": groups,
+                               "hint": "多实例：下一步操作请显式带 --port"},
+                              ensure_ascii=False)
         port = disc["ports"][0]
     return json.dumps({"ok": True, "port": int(port),
                        "tabs": cdp.tabs(int(port))}, ensure_ascii=False)
@@ -180,26 +196,93 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None):
     =discover；index=第几个 page 标签；fullpage=captureBeyondViewport
     （Chrome 90+，视口外也截）。Chrome 136+ 默认 profile 拒远程调试
     （default_profile_denied）——用非默认 --user-data-dir 启动。返回
-    截图 PNG 路径；本工具需宿主重连后才会出现在工具表。"""
-    if port in (None, "", 0):
-        disc = cdp.discover()
-        if not disc["ports"]:
-            raise RuntimeError(disc["hint"])
-        port = disc["ports"][0]
-    png, info = cdp.shot(int(port), index=int(index or 0),
-                         fullpage=fullpage not in (False, "false", "False",
-                                                   "0"))
+    截图 PNG 路径；本工具需宿主重连后才会出现在工具表。收据含 dpr 与
+    **to_css**：截图像素 × to_css = 点击用的 CSS 坐标。"""
+    ws = _resolve_cdp(port, index)
+    png, info = cdp.shot(None, ws=ws, fullpage=fullpage not in (
+        False, "false", "False", "0"))
     path = output.save(png, out=out)
-    return json.dumps({"ok": True, "path": path, "port": int(port),
-                       "fullpage": info["fullpage"]}, ensure_ascii=False)
+    rec = {"ok": True, "path": path}
+    for k in ("w", "h", "vw", "vh", "dpr", "to_css", "hint", "fullpage"):
+        if k in info:
+            rec[k] = info[k]
+    return json.dumps(rec, ensure_ascii=False)
 
 
-def _resolve_cdp(port, index=0):
-    """cdp 输入工具公共解析：port 缺省 discover -> page ws。"""
+def _cdp_view(port=None, index=0, ws=None, timeout=15):
+    """CDP 标签页视口信息（v0.2.5）：vw/vh = CSS 像素视口尺寸，
+    dpr = devicePixelRatio，content_w/h = 整页内容尺寸。
+    截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15))
+    rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
+           "content_w": lay["content_w"], "content_h": lay["content_h"],
+           "dpr": dpr}
+    if lay["vw"] and lay["vh"] and dpr:
+        rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
+                       % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
+    return json.dumps(rec, ensure_ascii=False)
+
+
+def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
+              timeout=30):
+    """在 CDP 标签页里跑一段 JS 并取值（v0.2.5）。js 可写函数体（内部
+    return）或表达式。用途：算坐标、读页面状态确认操作生效、拿 dpr。
+    **只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点，
+    一发即杀实例）。收据 {ok, value, exception}——异常如实带出不静默。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    res = cdp.evaluate(ws_url, js, timeout=int(timeout or 30),
+                       await_promise=await_promise in (
+                           True, "true", "True", "1"))
+    exc = res.get("exceptionDetails")
+    rec = {"ok": exc is None}
+    if exc:
+        rec["exception"] = ((exc.get("exception") or {}).get("description")
+                            or exc.get("text") or str(exc)[:200])
+    else:
+        res_obj = res.get("result") or {}
+        rec["value"] = res_obj.get("value")
+        if res_obj.get("type") == "undefined":
+            rec["note"] = "undefined（多半传了表达式却没写 return）"
+    return json.dumps(rec, ensure_ascii=False)
+
+
+def _describe_ports(ports):
+    """多端口时把每个实例的首个页签列出来，让人一眼认出是谁的浏览器
+    （v0.2.5：discover 直接取 [0] 会把操作打到别人的实例上——实测
+    曾把 ALrec 的 9225 当成目标）。列不出来就只给端口，不编造。"""
+    lines = []
+    for p in ports:
+        try:
+            ts = cdp.tabs(int(p))
+            head = ts[0] if ts else None
+            if head:
+                lines.append("  --port %s  %s | %s"
+                             % (p, (head.get("title") or "")[:40],
+                                (head.get("url") or "")[:60]))
+                continue
+        except Exception:  # noqa: BLE001 —— 标注失败不影响报错本身
+            pass
+        lines.append("  --port %s  （无法读取页签）" % p)
+    return lines
+
+
+def _resolve_cdp(port, index=0, allow_multi=False):
+    """cdp 输入工具公共解析：port 缺省 discover -> page ws。
+
+    **安全边界（v0.2.5）**：discover 命中多个调试端口时，输入类动作
+    **必须显式指定 --port**——静默取第一个会把鼠标事件打到完全不相干的
+    浏览器实例上（可能带对方的登录态、可能正在被对方手动使用）。
+    只有只读的 cdp-tabs 允许 allow_multi（它本就能一次列多实例）。"""
     if port in (None, "", 0):
         disc = cdp.discover()
         if not disc["ports"]:
             raise RuntimeError(disc["hint"])
+        if len(disc["ports"]) > 1 and not allow_multi:
+            raise RuntimeError(
+                "发现 %d 个调试浏览器实例，不安全猜：请用 --port 指定目标\n%s"
+                % (len(disc["ports"]), "\n".join(_describe_ports(
+                    disc["ports"]))))
         port = disc["ports"][0]
     return cdp.ws_for(int(port), index=int(index or 0))
 
@@ -231,35 +314,92 @@ def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
 
 
 def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
-               index=0, ws=None):
+               index=0, ws=None, timing=True, verify=""):
     """CDP 鼠标单击（v0.2.0/0.2.4）：x/y=CSS 像素；button=left/right/
-    middle；human=True（缺省）先沿人类化贝塞尔轨迹移动到位（比人快、
-    带微抖动），--teleport/teleport=False 退回瞬移。返回
-    {ok, dispatched}。需宿主重连出现。"""
+    middle；human=True（缺省）先沿人类化贝塞尔轨迹移动到位（带微抖动、
+    有节奏地靠近），timing=false 或 --teleport 可退回瞬移（批处理时省掉
+    每次约 200ms 的靠近耗时）。
+    verify=一段 JS（可选）：点完立刻求值，结果进收据 verify 字段——
+    **dispatched 只说明事件发出去了，不说明生效**（v0.2.5 诚实化）。
+    返回 {ok, dispatched}。需宿主重连出现。"""
     ws_url = ws or _resolve_cdp(port, index)
     seq = cdp.click_events(int(x), int(y), button=button,
                            human=human not in (False, "false", "False",
                                                "0"),
                            seed=int(seed) if seed not in (None, "") else None)
-    n, _ = cdp.dispatch(ws_url, seq)
-    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+    t0 = time.time()
+    n, _ = cdp.dispatch(ws_url, seq,
+                        realtime=timing not in (False, "false", "False", "0"))
+    rec = {"ok": True, "dispatched": n,
+           "seconds": round(time.time() - t0, 2)}
+    if verify:
+        try:
+            r = cdp.evaluate(ws_url, verify)
+            exc = r.get("exceptionDetails")
+            rec["verify"] = ({"exception": str(exc)[:200]} if exc
+                             else (r.get("result") or {}).get("value"))
+        except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+            rec["verify"] = {"error": "%s: %s" % (type(e).__name__,
+                                                  str(e)[:160])}
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
-              seed=None, port=None, index=0, ws=None):
-    """CDP 鼠标拖拽（v0.2.4）：按下 → **人类化贝塞尔+抖动轨迹** →
-    释放；human=False 退回直线插值。返回 {ok, dispatched}。需宿主
-    重连出现。"""
+              seed=None, port=None, index=0, ws=None, pace="normal",
+              total_ms=None, constrained=True, max_perp=2.5,
+              timing=True, verify=""):
+    """CDP 鼠标拖拽（v0.2.4/0.2.5）：按下 → 节奏化移动 → 末端过冲回退
+    → 松手。
+
+    pace=节奏档（**速度可调，用户 2026-10-28 要求**）：
+      · normal（缺省）≈ 260 + dist×1.1 ms，夹在 320~1400ms
+      · **captcha ≈ 700 + dist×2.4 ms，夹在 900~2600ms——过验证码用这档**
+      · fast ≈ 120 + dist×0.45 ms，夹在 150~600ms（批处理/不赶风控时用）
+    total_ms=显式指定总时长（**优先于 pace**）；给 0 = 不睡、全速派发。
+    timing=false 也能一键关掉所有等待（等价于全速）。
+    constrained=true（缺省）= 受轨道约束（垂直偏移 ≤ max_perp），
+    拖滑块/进度条/分栏必须开；false=自由拖拽（画图框选）走贝塞尔弧线。
+    human=false = 直线插值（旧行为，最像机器，仅供对照）。
+    verify=一段 JS（可选）：拖完立刻求值，结果进收据——用来确认真的拖到了。
+
+    返回 {ok, dispatched, seconds, pace, constrained}。需宿主重连出现。"""
     ws_url = ws or _resolve_cdp(port, index)
-    seq = cdp.drag_events(x1, y1, x2, y2,
-                          steps=int(steps) if steps not in (None, "",
-                                                            0) else 0,
-                          button=button,
-                          human=human not in (False, "false", "False",
-                                              "0"),
-                          seed=int(seed) if seed not in (None, "") else None)
-    n, _ = cdp.dispatch(ws_url, seq)
-    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+    seq = cdp.drag_events(
+        x1, y1, x2, y2,
+            steps=int(steps) if steps not in (None, "", 0) else 0,
+            button=button,
+            human=human not in (False, "false", "False", "0"),
+            seed=int(seed) if seed not in (None, "") else None,
+        constrained=constrained not in (False, "false", "False", "0"),
+        max_perp=float(max_perp or 2.5),
+        total_ms=(None if total_ms in (None, "") else float(total_ms)),
+        pace=pace or "normal")
+    stats = {}
+    t0 = time.time()
+    n, _ = cdp.dispatch(ws_url, seq,
+                        realtime=timing not in (False, "false", "False", "0"),
+                        stats=stats)
+    rec = {"ok": True, "dispatched": n,
+           "seconds": round(time.time() - t0, 2),
+           "pace": str(pace or "normal"),
+           "timing": timing not in (False, "false", "False", "0"),
+           "constrained": constrained not in (False, "false", "False", "0"),
+           "max_perp": float(max_perp or 2.5)}
+    if stats.get("planned_ms"):
+        rec["planned_ms"] = stats["planned_ms"]
+    if stats.get("clipped_ms"):
+        rec["clipped_ms"] = stats["clipped_ms"]
+        rec["hint"] = "等待被 3s 上限夹断，实际节奏比请求慢档短"
+    if verify:
+        try:
+            r = cdp.evaluate(ws_url, verify)
+            exc = r.get("exceptionDetails")
+            rec["verify"] = ({"exception": str(exc)[:200]} if exc
+                             else (r.get("result") or {}).get("value"))
+        except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+            rec["verify"] = {"error": "%s: %s" % (type(e).__name__,
+                                                  str(e)[:160])}
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
@@ -277,11 +417,14 @@ def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
-def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None):
+def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,
+              verify=""):
     """CDP 整段文本输入（v0.2.3 填表利器）：Input.insertText 粘贴式
     （不逐键击、不触发每键 keydown）。x/y 可选——先点击聚焦输入框
     再输入。**与用户键鼠天然隔离**：CDP 事件只进指定标签页，不占用户
-    键盘（v0.2.0 §4.2.2）。返回 {ok, dispatched}。需宿主重连出现。"""
+    键盘（v0.2.0 §4.2.2）。verify=一段 JS（可选）：输完立刻求值
+    （如 `return document.activeElement.value`），结果进收据——用来
+    确认字真的进去了。返回 {ok, dispatched}。需宿主重连出现。"""
     ws_url = ws or _resolve_cdp(port, index)
     seq = ([{"type": "mouseMoved", "x": int(x), "y": int(y),
              "modifiers": 0},
@@ -293,7 +436,17 @@ def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None):
              "modifiers": 0}] if x is not None and y is not None
         else []) + cdp.insert_text_events(text)
     n, _ = cdp.dispatch(ws_url, seq)
-    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+    rec = {"ok": True, "dispatched": n}
+    if verify:
+        try:
+            r = cdp.evaluate(ws_url, verify)
+            exc = r.get("exceptionDetails")
+            rec["verify"] = ({"exception": str(exc)[:200]} if exc
+                             else (r.get("result") or {}).get("value"))
+        except Exception as e:  # noqa: BLE001 —— 校验失败不吞主收据
+            rec["verify"] = {"error": "%s: %s" % (type(e).__name__,
+                                                  str(e)[:160])}
+    return json.dumps(rec, ensure_ascii=False)
 
 
 _tool_named("ashot_shot", _shot)
@@ -303,6 +456,8 @@ _tool_named("ashot_fonts", _fonts)
 _tool_named("ashot_show", _show)
 _tool_named("ashot_cdp_tabs", _cdp_tabs)
 _tool_named("ashot_cdp_shot", _cdp_shot)
+_tool_named("ashot_cdp_view", _cdp_view)
+_tool_named("ashot_cdp_eval", _cdp_eval)
 _tool_named("ashot_cdp_key", _cdp_key)
 _tool_named("ashot_cdp_wheel", _cdp_wheel)
 _tool_named("ashot_cdp_click", _cdp_click)
