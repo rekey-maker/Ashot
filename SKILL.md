@@ -136,11 +136,14 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 
 ## MCP（ashot 域名，宿主注册后可用）
 
-v0.2.5 起 **15 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
-`ashot_fonts` / `ashot_show` / `ashot_cdp_tabs` / `ashot_cdp_shot` /
-`ashot_cdp_view` / `ashot_cdp_eval` / `ashot_cdp_key` / `ashot_cdp_wheel` /
-`ashot_cdp_click` / `ashot_cdp_drag` / `ashot_cdp_dblclick` / `ashot_cdp_type`
-——与 CLI 完全同能力；cdp 系各参数语义见上文 CLI 段。
+v0.3.0 起 **20 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+`ashot_fonts` / `ashot_show` / `ashot_hash` / `ashot_diff` / `ashot_element` /
+`ashot_frames` / `ashot_frame_element` / `ashot_cdp_tabs` /
+`ashot_cdp_shot` / `ashot_cdp_view` / `ashot_cdp_eval` / `ashot_cdp_key` /
+`ashot_cdp_wheel` / `ashot_cdp_click` / `ashot_cdp_drag` /
+`ashot_cdp_dblclick` / `ashot_cdp_type`
+——与 CLI 完全同能力；cdp 系各参数语义见上文 CLI 段；hash/diff/element/
+frames 见「通用原语」段。
 `ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带
 `all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」；
 `box_source`=区域来源，win 模式 dwm=可见帧界、rect=回退；`gdi_error`=
