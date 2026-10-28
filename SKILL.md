@@ -96,6 +96,12 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 - `screens`——列出显示器（非 Windows 平台如实报「批2」）。
 
 ## MCP（ashot 域名，宿主注册后可用）
+
+v0.2.5 起 **15 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+`ashot_fonts` / `ashot_show` / `ashot_cdp_tabs` / `ashot_cdp_shot` /
+`ashot_cdp_view` / `ashot_cdp_eval` / `ashot_cdp_key` / `ashot_cdp_wheel` /
+`ashot_cdp_click` / `ashot_cdp_drag` / `ashot_cdp_dblclick` / `ashot_cdp_type`
+——与 CLI 完全同能力；cdp 系各参数语义见上文 CLI 段。
 `ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带
 `all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」）、
 `ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
