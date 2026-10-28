@@ -30,7 +30,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
   未安装字体名 GDI+ 静默回退默认字体——**先 `fonts <子串>` 核名再写
-  font**）/mosaic/blur/
+  font**；**v0.2.6 起 text 可带 `w`=布局宽（像素），GDI+ 按真实字体
+  度量自动换行**；越界不再静默——收据 `bounds_warn` 给实测超出像素
+  （如 "op[0] text 超出画布：右 135px"），自己改坐标或给 `w`）/mosaic/blur/
   step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
   smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
@@ -42,7 +44,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （System.Drawing 抗锯齿，真矢量——边缘平滑无马赛克感，文字走微软
   雅黑）；GDI+ 失败自动降级纯像素画布（硬边）。收据 `backend` 只反映
   形状渲染后端（`gdi+`=矢量成功 / `pixel`=降级或纯像素，混合 ops 仍
-  gdi+），`pixel_ops`=像素操作数量；**像素 ops（mosaic/blur/spotlight/
+  gdi+），`pixel_ops`=像素操作数量；**降级时带 `degrade_reason`**
+  （v0.2.6——设计内降级 vs 环境坏了可区分）；**像素 ops（mosaic/blur/spotlight/
   smarterase）恒在形状之后叠加，与 ops 数组位置无关**（spotlight 排
   第 1 也会把画在框外的形状压暗）。
   例：
@@ -52,8 +55,12 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   "color":"#FF3B30"},
   {"kind":"text","x":20,"y":80,"text":"这里有问题","size":28,
   "color":"#FFFFFF"}]'`
-- `fonts [filter]`（v0.1.10）——列出已装字体族（英文规范名，双语过滤：
-  "kai"/"楷体" 都能查到 KaiTi）；族名走 stdout、计数走 stderr。
+- `fonts [filter] [--refresh]`（v0.1.10/0.2.6）——列出已装字体族（英文
+  规范名，过滤不区分大小写）。**"楷体"这类本地名能否命中取决于 OS**：
+  部分机器 .NET 的 FontFamily.Name 也只回英文名，此时只有 "kai" 能查到
+  KaiTi（数据边界，不是 bug）；`--refresh` 强制重枚举（v0.2.6，装了新
+  字体不必重启；MCP 侧 `refresh` 缺省 false，靠 300s TTL 自愈，急用才
+  传 true）。族名走 stdout、计数走 stderr。
 - `show <image> --title T [--caption C] [--out-dir D] [--width N]`
   （v0.1.12）——图片→数据 URL 内嵌 HTML（用户可见展示，::visualize
   场景 out_dir 传会话可视化目录）；html 路径 stdout、preview 信息
@@ -65,8 +72,18 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   端口；**多实例时输入类命令不猜，报错列实例让人挑**）；cdp-shot 缺省
   captureBeyondViewport 全页，收据带 w/h（出图像素）/vw/vh/dpr/
   **to_css**（截图像素 × to_css = 点击 CSS 坐标；获取失败亮
-  layout_error 不吞主收据）。Chrome 136+ 默认
-  profile 拒远程调试——浏览器须用非默认 --user-data-dir 启动。
+  layout_error 不吞主收据）。**v0.2.6 坐标语义**：全页截图给的是
+  **文档坐标**（收据 coord_space=document + scroll_y）——点首屏以下
+  要先滚动，点击坐标 = 文档坐标 − scrollY；不想换算就 `--viewport`。
+  收据若带 `to_css_estimated:true` 说明 dpr 没取到、`to_css` 是退化估算，
+  先 `cdp-view` 核 dpr 再点；收据带 `fullpage_truncated:true` 或 hint 说
+  "只截到 N CSS" 时，说明整页没拍全（页太高/只覆盖视口）——首屏以下要
+  先滚动**再截一次**。
+  超长页自动滚动拼接（先试单张，被 Chrome 拒绝才逐屏拼：收据
+  stitched:true + shots:N；`--no-stitch` 关闭并如实报错）；固定定位
+  元素每屏重复。
+  Chrome 136+ 默认 profile 拒远程调试——浏览器须用非默认
+  --user-data-dir 启动。
 - **CDP 输入注入**（v0.2.1/0.2.3/0.2.5）：`cdp-key <键> [--modifiers ctrl+shift]
   [--text T]`（回车/Tab/方向键/F1-F12/符号/任意字符/组合快捷键，
   rawKeyDown+char 双发；未知键收据 unresolved_keys 亮牌）、
@@ -91,9 +108,29 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   **坐标换算铁律**：截图出图是物理像素（=CSS×dpr），直接拿截图坐标
   去点击必然落空；`cdp-shot` 收据的 `to_css`（=1/dpr）× 截图像素 =
   点击用 CSS 坐标。
-- **多实例纪律**（v0.2.5）：本机有多个 CDP 浏览器时，输入类命令不猜
-  端口——报错并列出各实例页签，**必须显式 `--port`**。
+- **多实例纪律**（v0.2.5/0.2.6）：本机有多个 CDP 浏览器时，输入类命令
+  **与 cdp-shot** 都不猜端口——报错并列出各实例页签，**必须显式
+  `--port`**；单实例也会把目标身份（端口/进程名/页签标题）打到 stderr。
+  `discover` 的进程枚举失败（如 WMI 拒绝访问）会以 ⚠ 明示并退化为端口
+  扫描，不静默。
 - `screens`——列出显示器（非 Windows 平台如实报「批2」）。
+
+## 通用原语（v0.2.7，非验证码）
+- `hash <png> [--algo sha256|dhash|ahash]`——图像指纹；`dhash` 对缩放/
+  亮度平移稳定，适合"是不是同一张"。
+- `diff <a> <b> [--threshold 0.12] [--out diff.png]`——YIQ 差异：
+  `changed_px/ratio/bbox/size_mismatch`；差异图=变化涂红、其余压暗。
+  **未做抗锯齿检测**，字体边缘可能有少量假差异（收据 note 会写）。
+- `element <selector> [--scroll]`——元素**视口 CSS 矩形**（x/y/w/h/cx/cy）
+  + `visible`（checkVisibility）/`in_viewport`/`visible_ratio`/
+  `occluded`（中心点 elementFromPoint）/`pointer_events`/dpr/滚动。
+  **坐标可直接喂 cdp-click**；截图坐标要先 × to_css，别混用。
+- `frames`——frame 树（id/url/parent/depth）+ 能取到的 iframe 矩形。
+- `frame-element <iframe选择器|JSON数组> <选择器>`——iframe 内元素 →
+  主页面视口坐标；同源任意深度、跨域同进程可用；跨站 OOPIF 会如实报
+  `oopif_unsupported`。
+- 典型用法（不涉及验证码）：`element` 拿按钮中心 → `cdp-click` 点它 →
+  `cdp-eval 'return ...'` 验证；`hash` 前后对比判断页面变没变。
 
 ## MCP（ashot 域名，宿主注册后可用）
 
@@ -103,23 +140,29 @@ v0.2.5 起 **15 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` 
 `ashot_cdp_click` / `ashot_cdp_drag` / `ashot_cdp_dblclick` / `ashot_cdp_type`
 ——与 CLI 完全同能力；cdp 系各参数语义见上文 CLI 段。
 `ashot_shot`（mode/screen/out/clip/keep/retention_days/area；收据带
-`all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」）、
+`all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」；
+`box_source`=区域来源，win 模式 dwm=可见帧界、rect=回退；`gdi_error`=
+主路降级原因）、
 `ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
 覆盖原图**）、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
 {ok, count, families}）、**`ashot_show`（v0.1.12，image/title/
 out_dir 必填 + caption?/width?——用户可见展示，见上）**；**新增工具
-需宿主重连后才出现在工具表**——与 CLI 同能力。**v0.1.11 起两工具均可选 `preview`=true：收据升级多
-内容块、附 1200px JPEG 缩图（ImageContent，audience:user；≤500KB
-梯次降档）。ZCode 宿主实测（用户纠偏修正）：宿主把图转成**视觉块喂
+需宿主重连后才出现在工具表**——与 CLI 同能力。**v0.2.6 起
+`ashot_shot`/`ashot_annotate`/`ashot_cdp_shot` 的 `preview` 缺省 true**：
+收据升级多内容块、附 ≤200KB JPEG 缩图（ImageContent，audience:user；
+不想要就传 `preview=false` 省一次缩图进程与上下文）。ZCode 宿主实测（用户纠偏修正）：宿主把图转成**视觉块喂
 模型**（agent 可直接看图自检标注，省 Read 大图）但**不渲染给用户**。
 **v0.1.12 起用户看图走第五工具 `ashot_show`（image/title/out_dir
 必填 + caption?/width?）或 CLI `show`**——数据 URL 内嵌 HTML 落
 会话可视化目录，配 ::visualize 引用（唯一被证实的用户可见通道），
 两通道分工勿混。**
 
-**部署纪律（2026-10-28 实弹）**：改了 Ashot 代码后，宿主重启未必真换
-MCP 进程（进程会赖着旧代码，如 screens 返回 0×0 假象）——杀掉
-ashot_mcp.py 进程即可，宿主下次调用自动重拉新版。
+**部署纪律（2026-10-28 实弹，v0.2.6 加检测）**：改了 Ashot 代码后，
+宿主重启未必真换 MCP 进程（进程会赖着旧代码，如 screens 返回 0×0
+假象）——杀掉 ashot_mcp.py 进程即可，宿主下次调用自动重拉新版。
+**v0.2.6 起每个收据都带 `ver`**：收据里的 ver 与你刚改的版本号不一致，
+就说明还是旧进程。开发期更稳的做法：验证逻辑走 CLI（每次新进程），
+MCP 只做最终验收。
 
 ## 标注形态分工
 - **C 形态（已交付）**：JSON ops 批量标注——agent 的主用路（拿到截图后

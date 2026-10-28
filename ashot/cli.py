@@ -7,7 +7,8 @@ import os
 import sys
 import time
 
-from . import __version__, annotate, annotate_gdi, capture, cdp, fonts, output, show
+from . import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,
+               output, show, vision)
 
 
 def _cmd_shot(a):
@@ -30,6 +31,10 @@ def _cmd_shot(a):
     path = output.save(png, out=a.out)
     if a.open:
         os_startfile(path)
+    # v0.2.6：区域来源 / 降级原因都亮出来（Q09/Q17，stdout 只留路径）
+    print("box_source: %s" % r.get("box_source"), file=sys.stderr)
+    if r.get("gdi_error"):
+        print("⚠ GDI 主路降级：%s" % r["gdi_error"], file=sys.stderr)
     n, mb = output.gc(retention_days=a.retention_days, keep=a.keep)
     if n:
         print("（retention 清理：%d 张旧图，释放 %.1f MB）" % (n, mb))
@@ -46,12 +51,92 @@ def _cmd_annotate(a):
         else:
             with open(a.ops_file, encoding="utf-8") as fh:
                 ops = json.load(fh)
-        out, backend, pixel_n = annotate_gdi.annotate_png_vector(png, ops)
-        path = output.save(out, out=a.out or
-                           a.image.rsplit(".", 1)[0] + "_annotated.png")
+        stats = {}
+        out, backend, pixel_n = annotate_gdi.annotate_png_vector(
+            png, ops, stats=stats)
+        path = output.save(out, out=a.out or annotate.default_out(a.image))
         print(path)
         print("backend: %s" % backend)
         print("pixel_ops: %d" % pixel_n)
+        # v0.2.6：降级原因与超界告警都走 stderr（stdout 保持"路径"契约）
+        if stats.get("degrade_reason"):
+            print("⚠ 矢量路降级：%s" % stats["degrade_reason"], file=sys.stderr)
+        for w in stats.get("bounds_warn") or []:
+            print("⚠ %s" % w, file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_hash(a):
+    try:
+        with open(a.image, "rb") as fh:
+            png = fh.read()
+        rec = vision.digest(png)
+        if a.algo:
+            rec["value"] = rec.get(a.algo)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_diff(a):
+    try:
+        with open(a.a, "rb") as fh:
+            pa = fh.read()
+        with open(a.b, "rb") as fh:
+            pb = fh.read()
+        rec = vision.diff(pa, pb, threshold=a.threshold,
+                          make_image=bool(a.out))
+        img = rec.pop("image", None)
+        if a.out and img:
+            rec["out"] = output.save(img, out=a.out)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_element(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        rec = dom.element_rect(ws, a.selector, scroll=a.scroll)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_frame_element(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        frames_arg = a.iframe
+        if frames_arg.strip().startswith("["):
+            frames_arg = json.loads(frames_arg)
+        rec = dom.frame_element_rect(ws, frames_arg, a.selector)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_frames(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        print(json.dumps({"ok": True, "frames": dom.frames(ws)},
+                         ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -60,7 +145,7 @@ def _cmd_annotate(a):
 
 def _cmd_fonts(a):
     try:
-        names = fonts.list_families(a.filter)
+        names = fonts.list_families(a.filter, refresh=bool(a.refresh))
         for n in names:
             print(n)
         print("total: %d" % len(names), file=sys.stderr)
@@ -87,14 +172,28 @@ def _cmd_show(a):
 
 def _cmd_cdp_tabs(a):
     try:
-        port = a.port
-        if port is None:
+        ports = None
+        if a.port is None:
             disc = cdp.discover()
             if not disc["ports"]:
                 print("✗ %s" % disc["hint"], file=sys.stderr)
                 return 1
-            port = disc["ports"][0]
-            print("discovered port: %d" % port, file=sys.stderr)
+            for w in disc.get("warnings") or []:
+                print("⚠ %s" % w, file=sys.stderr)
+            ports = disc["ports"]
+            if len(ports) > 1:
+                # 只读命令：多实例一次列全（v0.2.5 分组语义；与 MCP 对齐）
+                for p in ports:
+                    print("== port %s ==" % p)   # 表头进 stdout（消费方可对号）
+                    try:
+                        for t in cdp.tabs(p):
+                            print("%s\t%s\t%s"
+                                  % (t["id"][:8], t["title"], t["url"]))
+                    except Exception as e:  # noqa: BLE001
+                        print("  （读取失败：%s）" % e, file=sys.stderr)
+                return 0
+            print("discovered port: %d" % ports[0], file=sys.stderr)
+        port = a.port if a.port is not None else ports[0]
         for t in cdp.tabs(port):
             print("%s\t%s\t%s" % (t["id"][:8], t["title"], t["url"]))
         return 0
@@ -105,18 +204,23 @@ def _cmd_cdp_tabs(a):
 
 def _cmd_cdp_shot(a):
     try:
-        port = a.port
-        if port is None:
-            disc = cdp.discover()
-            if not disc["ports"]:
-                print("✗ %s" % disc["hint"], file=sys.stderr)
-                return 1
-            port = disc["ports"][0]
-            print("discovered port: %d" % port, file=sys.stderr)
-        png, info = cdp.shot(port, index=a.index, fullpage=not a.viewport)
+        port, info = cdp.pick_port(a.port)
+        for w in info.get("warnings") or []:
+            print("⚠ %s" % w, file=sys.stderr)
+        png, meta = cdp.shot(port, index=a.index,
+                             fullpage=not a.viewport,
+                             stitch=not getattr(a, "no_stitch", False))
         path = output.save(png, out=a.out)
         print(path)
-        print("fullpage: %s" % info["fullpage"], file=sys.stderr)
+        # v0.2.6 Q22：换算依据不能只给 MCP——CLI 同样输出坐标语义
+        print("fullpage: %s" % meta["fullpage"], file=sys.stderr)
+        for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
+                  "scroll_y", "fullpage_truncated", "stitched", "shots",
+                  "stitch_error"):
+            if k in meta:
+                print("%s: %s" % (k, meta[k]), file=sys.stderr)
+        if meta.get("hint"):
+            print("hint: %s" % meta["hint"], file=sys.stderr)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -126,37 +230,25 @@ def _cmd_cdp_shot(a):
 def _resolve_cdp_ws(a):
     """cdp-* 输入命令公共解析：--port/--ws -> ws url（discover 兜底）。
 
-    **安全边界（v0.2.5）**：discover 命中多个调试端口时拒绝猜——静默
-    取第一个会把鼠标事件打到完全不相干的浏览器实例上（实测曾把 ALrec
-    的 9225 当目标）。此时列出各实例首个页签让人挑，显式带 --port 重跑。
-    """
+    **安全边界（v0.2.5/0.2.6）**：discover 命中多个调试端口时拒绝猜——
+    静默取第一个会把鼠标事件打到完全不相干的浏览器实例上（实测曾把
+    ALrec 的 9225 当目标）。单实例也把目标身份（端口/进程/页签标题）
+    打到 stderr，便于核对是不是自己的浏览器。"""
     if getattr(a, "ws", None):
         return a.ws
-    port = getattr(a, "port", None)
-    if port is None:
-        disc = cdp.discover()
-        if not disc["ports"]:
-            print("✗ %s" % disc["hint"], file=sys.stderr)
-            return None
-        if len(disc["ports"]) > 1:
-            print("✗ 发现 %d 个调试浏览器实例，不安全猜——请用 "
-                  "--port 指定目标：" % len(disc["ports"]), file=sys.stderr)
-            for p in disc["ports"]:
-                try:
-                    ts = cdp.tabs(int(p))
-                    head = ts[0] if ts else None
-                    if head:
-                        print("  --port %s  %s | %s"
-                              % (p, (head.get("title") or "")[:40],
-                                 (head.get("url") or "")[:60]),
-                              file=sys.stderr)
-                        continue
-                except Exception:  # noqa: BLE001 —— 标注失败不影响报错本身
-                    pass
-                print("  --port %s  （无法读取页签）" % p, file=sys.stderr)
-            return None
-        port = disc["ports"][0]
-        print("discovered port: %d" % port, file=sys.stderr)
+    try:
+        port, info = cdp.pick_port(getattr(a, "port", None))
+    except RuntimeError as e:
+        print("✗ %s" % e, file=sys.stderr)
+        return None
+    for w in info.get("warnings") or []:
+        print("⚠ %s" % w, file=sys.stderr)
+    tgt = cdp.target_info(port, int(getattr(a, "index", 0) or 0))
+    print("target: port=%s%s%s"
+          % (port,
+             (" process=%s" % info["process"]) if info.get("process") else "",
+             (" | %s" % tgt.get("title")) if tgt.get("title") else ""),
+          file=sys.stderr)
     return cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0))
 
 
@@ -202,8 +294,12 @@ def _cmd_cdp_click(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
+        start = ((getattr(a, "from_x", None), getattr(a, "from_y", None))
+                 if getattr(a, "from_x", None) is not None
+                 and getattr(a, "from_y", None) is not None else None)
         seq = cdp.click_events(a.x, a.y, button=a.button,
-                               human=not a.teleport, seed=a.seed)
+                               human=not a.teleport, seed=a.seed,
+                               start=start)
         t0 = time.time()
         n, _ = cdp.dispatch(ws, seq,
                             realtime=not getattr(a, "no_timing", False))
@@ -276,9 +372,12 @@ def _cmd_cdp_dblclick(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
+        start = ((getattr(a, "from_x", None), getattr(a, "from_y", None))
+                 if getattr(a, "from_x", None) is not None
+                 and getattr(a, "from_y", None) is not None else None)
         seq = cdp.dblclick_events(a.x, a.y, button=a.button,
                                   count=a.count, human=not a.teleport,
-                                  seed=a.seed)
+                                  seed=a.seed, start=start)
         n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
@@ -388,7 +487,10 @@ def main(argv=None):
         except Exception:  # noqa: BLE001 —— 老版本无 reconfigure 不致命
             pass
     ap = argparse.ArgumentParser(
-        prog="ashot", description="Ashot —— agent 友好的桌面截图与标注工具")
+        prog="ashot", description="Ashot —— agent 友好的桌面截图与标注工具",
+        # v0.2.6 Q22：关掉前缀缩写——`--ops '[{...}]'` 曾被子命令的
+        # --ops-file 前缀匹配吞成"打开文件"，报 OSError 而不是用法错误
+        allow_abbrev=False)
     ap.add_argument("--version", action="version",
                     version="ashot " + __version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -423,6 +525,8 @@ def main(argv=None):
     f = sub.add_parser("fonts", help="列出已装字体族（text 的 font 先查后用）")
     f.add_argument("filter", nargs="?", default=None,
                    help="不区分大小写子串过滤，如 kai / yahei")
+    f.add_argument("--refresh", action="store_true",
+                   help="强制重新枚举（常驻进程装了新字体时用，v0.2.6）")
     f.set_defaults(func=_cmd_fonts)
 
     w = sub.add_parser("show", help="图片→内嵌 HTML（用户可见展示，配 ::visualize）")
@@ -445,6 +549,8 @@ def main(argv=None):
     cs.add_argument("--index", type=int, default=0, help="第几个 page 标签")
     cs.add_argument("--viewport", action="store_true",
                     help="只抓视口（缺省 captureBeyondViewport 全页）")
+    cs.add_argument("--no-stitch", dest="no_stitch", action="store_true",
+                    help="超长页（>16384px）不滚动拼接，按单张上限如实报错")
     cs.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
     cs.set_defaults(func=_cmd_cdp_shot)
 
@@ -454,6 +560,39 @@ def main(argv=None):
         p.add_argument("--index", type=int, default=0, help="第几个 page 标签")
         p.add_argument("--ws", default=None,
                        help="直接给 page 级 ws url（优先于 port/index）")
+
+    h = sub.add_parser("hash", help="图像指纹（sha256/dhash/ahash，v0.2.7）")
+    h.add_argument("image", help="PNG 路径")
+    h.add_argument("--algo", default=None,
+                   choices=["sha256", "dhash", "ahash"],
+                   help="只取某一个值（收据仍含全部指纹）")
+    h.set_defaults(func=_cmd_hash)
+
+    df = sub.add_parser("diff", help="两张 PNG 差异（YIQ+阈值，v0.2.7）")
+    df.add_argument("a", help="图 A")
+    df.add_argument("b", help="图 B")
+    df.add_argument("--threshold", type=float, default=0.12,
+                    help="0~1 颜色距离阈值（越大越宽容，缺省 0.12）")
+    df.add_argument("--out", default=None, help="差异图输出路径（可选）")
+    df.set_defaults(func=_cmd_diff)
+
+    el = sub.add_parser("element", help="元素视口矩形+可见性（CSS px，v0.2.7）")
+    el.add_argument("selector", help="CSS 选择器")
+    el.add_argument("--scroll", action="store_true",
+                    help="先 scrollIntoView(center) 再量")
+    _add_common(el)
+    el.set_defaults(func=_cmd_element)
+
+    fr = sub.add_parser("frames", help="frame 树 + iframe 自身矩形（v0.2.7）")
+    _add_common(fr)
+    fr.set_defaults(func=_cmd_frames)
+
+    fe = sub.add_parser("frame-element",
+                        help="iframe 内元素 → 主页面视口 CSS 矩形（v0.2.7）")
+    fe.add_argument("iframe", help='iframe 选择器；嵌套用 JSON 数组 ["#a","#b"]')
+    fe.add_argument("selector", help="iframe 内元素选择器")
+    _add_common(fe)
+    fe.set_defaults(func=_cmd_frame_element)
 
     ck = sub.add_parser("cdp-key", help="CDP 按键/组合键/文本注入（v0.2.0）")
     ck.add_argument("key", help="键名：a / enter / tab / arrowup / s（配 --modifiers）")
@@ -483,6 +622,11 @@ def main(argv=None):
                          "120~320ms；批处理时可关）")
     cc.add_argument("--seed", type=int, default=None,
                     help="轨迹随机种子（复现用；缺省每次随机）")
+    cc.add_argument("--from-x", dest="from_x", type=int, default=None,
+                    help="接近轨迹起点 x（v0.2.6；缺省目标周围随机方位，"
+                         "不再恒从左上角出发）")
+    cc.add_argument("--from-y", dest="from_y", type=int, default=None,
+                    help="接近轨迹起点 y")
     cc.add_argument("--verify", default="",
                     help="点完后立刻求值的一段 JS，结果进收据"
                          "（如 \"return document.title\"）——dispatched "
@@ -534,6 +678,10 @@ def main(argv=None):
     cb.add_argument("--teleport", action="store_true",
                     help="跳过人类化移动轨迹")
     cb.add_argument("--seed", type=int, default=None, help="轨迹随机种子")
+    cb.add_argument("--from-x", dest="from_x", type=int, default=None,
+                    help="接近轨迹起点 x（v0.2.6；缺省随机方位）")
+    cb.add_argument("--from-y", dest="from_y", type=int, default=None,
+                    help="接近轨迹起点 y")
     _add_common(cb)
     cb.set_defaults(func=_cmd_cdp_dblclick)
 
@@ -561,16 +709,18 @@ def main(argv=None):
     _add_common(ct2)
     ct2.set_defaults(func=_cmd_cdp_type)
 
+    # 子解析器各自独立，allow_abbrev 不会继承父设置——逐个关掉前缀缩写
+    # （v0.2.6 Q22：`--ops` 被 --ops-file 前缀匹配吞掉的根源）
+    for _act in getattr(ap._subparsers, "_group_actions", []):
+        for _name, _sp in _act.choices.items():
+            _sp.allow_abbrev = False
+
     a = ap.parse_args(argv)
     return a.func(a)
 
 
 def os_startfile(path):
-    os_startfile_impl(path)
-
-
-def os_startfile_impl(path):
-    import os
+    """用系统默认看图器打开（v0.2.6 Q23：去掉双层包装与重复定义）。"""
     os.startfile(path)
 
 

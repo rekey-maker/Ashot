@@ -105,7 +105,8 @@ def test_gc_keep_skips(tmp_path):
 
 def test_cli_version():
     r = subprocess.run([sys.executable, "-m", "ashot.cli", "--version"],
-                       capture_output=True, text=True, cwd=ROOT)
+                       capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=ROOT)
     assert __version__ in r.stdout   # 版本烙印对：跟 __init__ 走，不硬编码
 
 
@@ -117,7 +118,8 @@ def test_cli_annotate_subcommand(tmp_path):
         [sys.executable, "-m", "ashot.cli", "annotate", str(src),
          json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 4, "h": 2}]),
          "--out", str(tmp_path / "out.png")],
-        capture_output=True, text=True, cwd=ROOT)
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=ROOT)
     assert (tmp_path / "out.png").exists(), r.stderr
 
 
@@ -392,7 +394,8 @@ def test_mcp_survives_non_object_frame():
                     "params": {"name": "ashot_screens", "arguments": {}}}),
     ]) + "\n"
     r = subprocess.run([sys.executable, "ashot_mcp.py"], input=payload,
-                       capture_output=True, text=True, cwd=ROOT, timeout=60)
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT, timeout=60)
     assert r.returncode == 0, r.stderr
     lines = [json.loads(x) for x in r.stdout.strip().splitlines()]
     assert lines[1]["error"]["code"] == -32600, lines[1]
@@ -407,7 +410,8 @@ def test_mcp_annotate_does_not_overwrite_source(tmp_path):
     original = _tiny_png()
     src.write_bytes(original)
     res = json.loads(mcp_mod._annotate(
-        str(src), json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 2, "h": 2}])))
+        str(src), json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 2, "h": 2}]),
+        preview=False))
     assert res["ok"] and res["path"] != str(src)
     assert src.read_bytes() == original, "原件被覆盖"
     assert os.path.basename(res["path"]).endswith("_annotated.png")
@@ -419,7 +423,10 @@ def test_mcp_tool_schemas():
     from ashot import mcp as mcp_mod
     assert set(mcp_mod.TOOLS) == {"ashot_shot", "ashot_screens",
                                   "ashot_annotate", "ashot_fonts",
-                                  "ashot_show", "ashot_cdp_tabs",
+                                  "ashot_show", "ashot_hash", "ashot_diff",
+                                  "ashot_element", "ashot_frames",
+                                  "ashot_frame_element",
+                                  "ashot_cdp_tabs",
                                   "ashot_cdp_shot", "ashot_cdp_key",
                                   "ashot_cdp_wheel", "ashot_cdp_click",
                                   "ashot_cdp_drag", "ashot_cdp_dblclick",
@@ -428,24 +435,31 @@ def test_mcp_tool_schemas():
     for nm, props in (
             ("ashot_cdp_click", {"x", "y", "button", "human", "seed",
                                  "port", "index", "ws", "timing",
-                                 "verify"}),
+                                 "verify", "from_x", "from_y"}),
             ("ashot_cdp_drag", {"x1", "y1", "x2", "y2", "steps", "button",
                                 "human", "seed", "port", "index", "ws",
                                           "pace", "total_ms", "constrained",
                                           "max_perp", "timing", "verify"}),
             ("ashot_cdp_dblclick", {"x", "y", "button", "count", "human",
-                                    "seed", "port", "index", "ws"})):
+                                    "seed", "port", "index", "ws",
+                                    "from_x", "from_y"})):
         assert set(mcp_mod.TOOLS[nm]["inputSchema"]["properties"]) == props, nm
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
+    assert sc["properties"]["preview"]["type"] == "boolean", \
+        "v0.2.6 Q13：有 bool 缺省的参数应声明为 boolean"
     ss = mcp_mod.TOOLS["ashot_shot"]["inputSchema"]
     assert set(ss["properties"]) == {"mode", "screen", "out", "clip",
                                      "keep", "area", "retention_days",
                                      "preview"}
+    assert ss["properties"]["preview"]["type"] == "boolean"
+    assert ss["properties"]["clip"]["type"] == "boolean"
+    # 无缺省值的参数仍按 string 声明（工具内自转型）
+    assert ss["properties"]["mode"]["type"] == "string"
     fc = mcp_mod.TOOLS["ashot_fonts"]["inputSchema"]
     assert fc["required"] == []
-    assert set(fc["properties"]) == {"filter"}
+    assert set(fc["properties"]) == {"filter", "refresh"}
     wc = mcp_mod.TOOLS["ashot_show"]["inputSchema"]
     assert wc["required"] == ["image", "title", "out_dir"]
     assert set(wc["properties"]) == {"image", "title", "out_dir",
@@ -455,15 +469,38 @@ def test_mcp_tool_schemas():
     assert set(ct["properties"]) == {"port"}
     cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
     assert cs["required"] == []
-    assert set(cs["properties"]) == {"port", "index", "fullpage", "out"}
+    assert set(cs["properties"]) == {"port", "index", "fullpage", "out",
+                                     "stitch",
+                                     "preview"}
     db = mcp_mod.TOOLS["ashot_cdp_dblclick"]["inputSchema"]
     assert db["required"] == ["x", "y"]
     assert set(db["properties"]) == {"x", "y", "button", "count", "human",
-                                     "seed", "port", "index", "ws"}
+                                     "seed", "port", "index", "ws",
+                                     "from_x", "from_y"}
+    assert db["properties"]["from_x"]["type"] == "integer", \
+        "坐标参数默认 None 也应按语义声明 integer（v0.2.6 审计）"
+    assert mcp_mod.TOOLS["ashot_cdp_click"]["inputSchema"]["properties"][
+        "x"]["type"] == "integer"
     tp = mcp_mod.TOOLS["ashot_cdp_type"]["inputSchema"]
     assert tp["required"] == ["text"]
     assert set(tp["properties"]) == {"text", "x", "y", "port", "index",
                                      "ws", "verify"}
+    hh = mcp_mod.TOOLS["ashot_hash"]["inputSchema"]
+    assert hh["required"] == ["image"]
+    assert set(hh["properties"]) == {"image", "algo"}
+    dd = mcp_mod.TOOLS["ashot_diff"]["inputSchema"]
+    assert dd["required"] == ["a", "b"]
+    assert set(dd["properties"]) == {"a", "b", "threshold", "out"}
+    assert dd["properties"]["threshold"]["type"] == "number"
+    el = mcp_mod.TOOLS["ashot_element"]["inputSchema"]
+    assert el["required"] == ["selector"]
+    assert set(el["properties"]) == {"selector", "port", "index", "ws", "scroll"}
+    assert el["properties"]["scroll"]["type"] == "boolean"
+    fe2 = mcp_mod.TOOLS["ashot_frame_element"]["inputSchema"]
+    assert fe2["required"] == ["iframe", "selector"]
+    assert set(fe2["properties"]) == {"iframe", "selector", "port", "index", "ws"}
+    fr2 = mcp_mod.TOOLS["ashot_frames"]["inputSchema"]
+    assert set(fr2["properties"]) == {"port", "index", "ws"}
     for nm, req, props in (
             ("ashot_cdp_key", ["key"],
              {"key", "text", "modifiers", "port", "index", "ws"}),
@@ -471,7 +508,7 @@ def test_mcp_tool_schemas():
              {"dx", "dy", "x", "y", "port", "index", "ws"}),
             ("ashot_cdp_click", ["x", "y"],
              {"x", "y", "button", "human", "seed", "port", "index", "ws",
-              "timing", "verify"}),
+              "timing", "verify", "from_x", "from_y"}),
             ("ashot_cdp_drag", ["x1", "y1", "x2", "y2"],
              {"x1", "y1", "x2", "y2", "steps", "button", "human", "seed",
               "port", "index", "ws", "pace", "total_ms", "constrained",
@@ -806,9 +843,14 @@ def test_text_font_pixel_path_ignores():
 
 def test_fonts_list_and_filter():
     """字库查询：列表非空且含渲染器缺省族、已排序；过滤不区分大小写
-    （数据源与渲染器同源，§7.9.2）。"""
+    （数据源与渲染器同源，§7.9.2）。
+
+    v0.2.6（Q19）：本地名命中是**条件承诺**——实测部分机器（含本机）
+    .NET 的 FontFamily.Name 也只回英文名（KaiTi 的本地名就是 "KaiTi"），
+    此时"楷体"过滤必然为空，属 OS 数据边界而非过滤器缺陷。测试按
+    实际数据判：只要存在本地名与英文名不同的族，就必须双命中。"""
     from ashot import fonts
-    names = fonts.list_families()
+    names = fonts.list_families(refresh=True)
     assert len(names) > 10, len(names)
     assert names == sorted(names), "未排序"
     assert len(set(names)) == len(names), "存在重复族名"
@@ -817,9 +859,46 @@ def test_fonts_list_and_filter():
     hits = fonts.list_families("kai")
     assert "KaiTi" in hits, hits
     assert all("kai" in n.lower() for n in hits)
-    # locale 注记：zh 系统上本地化名也能查到（双名索引，§7.9.2）
-    assert "KaiTi" in fonts.list_families("楷体")
     assert fonts.list_families("NoSuchFontZZZ") == []
+    aliased = [(en, loc) for en, loc in fonts._CACHE if en.lower() != loc.lower()]
+    if aliased:
+        en, loc = aliased[0]
+        assert en in fonts.list_families(loc), \
+            "OS 提供了本地名 %r，但本地名过滤没命中 %r" % (loc, en)
+    else:
+        # 数据边界：本机没有本地化别名，"楷体"查不到是预期行为
+        assert fonts.list_families("楷体") == []
+
+
+def test_fonts_cache_invalidation(monkeypatch):
+    """v0.2.6 Q11：字库缓存可失效——常驻进程装了新字体不必重启。"""
+    from ashot import fonts
+    calls = {"n": 0}
+    real = fonts.subprocess.run
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        class R:
+            returncode = 0
+            stdout = b"FakeFam\tFakeFam\n"
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(fonts.subprocess, "run", fake_run)
+    try:
+        fonts.clear_cache()
+        assert fonts.list_families() == ["FakeFam"]
+        assert calls["n"] == 1
+        fonts.list_families()          # 缓存命中：不再枚举
+        assert calls["n"] == 1
+        fonts.list_families(refresh=True)   # 强制刷新：再枚举
+        assert calls["n"] == 2
+        fonts.clear_cache()
+        fonts.list_families()
+        assert calls["n"] == 3
+    finally:
+        monkeypatch.setattr(fonts.subprocess, "run", real)
+        fonts.clear_cache()
 
 
 def test_fonts_cli_subcommand():
@@ -841,11 +920,18 @@ def _jpeg_magic(data):
 
 
 def test_shot_preview_compat_and_blocks(tmp_path):
-    """preview 缺省=false 收据仍是单字符串（兼容）；=true 升级两内容块
-    （文本收据含 preview 信息 + JPEG ImageContent，audience=user）。"""
+    """preview 缺省=true（v0.2.6 Q16）→ 两内容块；=false 退回单字符串
+    （兼容旧调用方，省上下文/省一次缩图进程）。"""
     from ashot import mcp as mcp_mod
     out_png = str(tmp_path / "s.png")
-    old = mcp_mod._shot(mode="area", area=[0, 0, 64, 48], out=out_png)
+    blocks = mcp_mod._shot(mode="area", area=[0, 0, 64, 48], out=out_png)
+    assert isinstance(blocks, list) and len(blocks) == 2, "缺省应带缩图"
+    receipt = json.loads(blocks[0]["text"])
+    assert receipt["ok"] and receipt["preview"]["fit"] is True
+    assert receipt["box_source"] == "area"
+
+    old = mcp_mod._shot(mode="area", area=[0, 0, 64, 48],
+                        out=str(tmp_path / "s0.png"), preview=False)
     assert isinstance(old, str) and json.loads(old)["ok"]
 
     blocks = mcp_mod._shot(mode="area", area=[0, 0, 64, 48],
@@ -862,7 +948,8 @@ def test_shot_preview_compat_and_blocks(tmp_path):
 
 
 def test_annotate_preview_blocks(tmp_path):
-    """annotate preview=true：同样升级两内容块，缩图来自标注成品。"""
+    """annotate preview=true：同样升级两内容块，缩图来自标注成品。
+    v0.2.6 起缺省即 true。"""
     from ashot import mcp as mcp_mod
     src = tmp_path / "in.png"
     src.write_bytes(_tiny_png())
@@ -878,6 +965,10 @@ def test_annotate_preview_blocks(tmp_path):
     src_jpeg, _ = output.preview_jpeg(_tiny_png())
     assert blocks[1]["data"] != base64.b64encode(src_jpeg).decode(), \
         "缩图竟是源图而非标注成品"
+    # 缺省（不传 preview）同样带图
+    assert isinstance(mcp_mod._annotate(
+        str(src), json.dumps([{"kind": "rect", "x": 0, "y": 0,
+                               "w": 2, "h": 2}])), list)
 
 
 def test_preview_jpeg_no_upscale_and_ladder():
@@ -1354,7 +1445,8 @@ def test_human_move_events_determinism():
     assert a == b, "同 seed 轨迹不同"
     c = cdp_mod.human_move_events(0, 0, 500, 400, seed=43)
     assert a != c, "不同 seed 轨迹相同"
-    assert a[0] == (500, 400) is not None or a[-1] == (500, 400)
+    # 首点仍贴近起点（缓动起步、抖动 fade=0）、终点精确
+    assert abs(a[0][0]) < 30 and abs(a[0][1]) < 30, a[0]
     assert a[-1] == (500.0, 400.0), "终点带抖动"
     # 步数自适应：距离 640 → ~25 步（min(28, 640/25=25)）
     assert 20 <= len(a) <= 30, len(a)
@@ -1521,3 +1613,925 @@ def test_cdp_dispatch_with_stub():
         ev = json.loads(raw.decode("utf-8"))
         assert "_delay_ms" not in ev, ev
         assert "unresolved" not in ev, ev
+# ---------- v0.2.6 修复锁（审查清单 Q03-Q22） ----------
+import copy
+
+import pytest
+
+
+def _stub_ws(monkeypatch, cdp_mod):
+    """把 dispatch 的握手与命令出口换成内存桩，返回已发送命令列表。"""
+    calls = []
+
+    class _Sock:
+        def close(self):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+    monkeypatch.setattr(cdp_mod, "_ws_connect",
+                        lambda *a, **k: (_Sock(), b""))
+    monkeypatch.setattr(cdp_mod.Session, "command",
+                        lambda self, m, p=None: calls.append((m, p)) or {})
+    return calls
+
+
+def test_dispatch_does_not_mutate_input_q03(monkeypatch):
+    """Q03 修复锁：dispatch 不得就地 pop 调用方的 _delay_ms/unresolved。
+
+    旧实现直接改输入事件，同一 seq 第二次派发时节奏延时全丢；现有实现
+    先 dict() 拷贝。锁住"入参不变 + 可重试"两件事（原测试只查发送侧）。"""
+    from ashot import cdp as cdp_mod
+    _stub_ws(monkeypatch, cdp_mod)
+    seq = cdp_mod.drag_events(10, 10, 200, 40, seed=3)
+    before = copy.deepcopy(seq)
+    assert any("_delay_ms" in e for e in before)
+    n1, _ = cdp_mod.dispatch("ws://127.0.0.1:1/x", seq, realtime=False)
+    assert seq == before, "dispatch 改动了调用方的事件序列"
+    n2, _ = cdp_mod.dispatch("ws://127.0.0.1:1/x", seq, realtime=False)
+    assert n2 == n1, "重试时事件数变了（元信息被吃掉了）"
+
+
+def test_discover_reports_enum_failure_q20(monkeypatch):
+    """Q20：进程枚举失败必须亮牌（旧实现只看 stdout，stderr 被吞）。"""
+    from ashot import cdp as cdp_mod
+    monkeypatch.setattr(cdp_mod, "_enum_browser_processes",
+                        lambda: ([], "进程枚举失败（rc=1）：Access denied"))
+    monkeypatch.setattr(cdp_mod, "_probe_ports",
+                        lambda ports, timeout=0.6, workers=8:
+                        {p: p == 9222 for p in ports})
+    res = cdp_mod.discover()
+    assert res["ports"] == [9222]
+    assert res["confidence"] == "scan"
+    assert res["warnings"] and "Access denied" in res["warnings"][0]
+    assert "别的工具" in res["hint"]
+    assert res["details"][0]["source"] == "scan"
+
+
+def test_discover_marks_process_identity_q04(monkeypatch):
+    """Q04/Q20：进程枚举成功时给出进程名，confidence=process。"""
+    from ashot import cdp as cdp_mod
+    cmd = ('C:\\Program Files\\Edge\\msedge.exe --remote-debugging-port=9333 '
+           '--user-data-dir=C:\\ud')
+    monkeypatch.setattr(cdp_mod, "_enum_browser_processes",
+                        lambda: ([(9333, cmd)], None))
+    monkeypatch.setattr(cdp_mod, "_probe_ports",
+                        lambda ports, timeout=0.6, workers=8:
+                        {p: p == 9333 for p in ports})
+    res = cdp_mod.discover()
+    assert res["ports"] == [9333]
+    assert res["confidence"] == "process"
+    assert res["details"][0]["process"] == "msedge.exe"
+    assert res["warnings"] == []
+
+
+def test_pick_port_single_and_multi_q04(monkeypatch):
+    """Q04：单实例返回身份信息；多实例输入类动作必须拒绝猜。"""
+    from ashot import cdp as cdp_mod
+    one = {"ports": [9301], "details": [{"port": 9301, "source": "scan",
+                                         "process": "chrome.exe",
+                                         "user_data_dir": ""}],
+           "warnings": ["枚举失败"], "hint": "x"}
+    monkeypatch.setattr(cdp_mod, "discover", lambda: one)
+    p, info = cdp_mod.pick_port(None)
+    assert p == 9301
+    assert info["process"] == "chrome.exe"
+    assert info["warnings"] == ["枚举失败"]      # 单实例也要带痕
+
+    two = dict(one, ports=[9301, 9302],
+               details=one["details"] + [{"port": 9302, "source": "scan",
+                                          "process": "", "user_data_dir": ""}])
+    monkeypatch.setattr(cdp_mod, "discover", lambda: two)
+    monkeypatch.setattr(cdp_mod, "tabs", lambda port: [])
+    with pytest.raises(RuntimeError) as ei:
+        cdp_mod.pick_port(None)
+    assert "--port" in str(ei.value)
+    assert cdp_mod.pick_port(None, allow_multi=True)[0] == 9301
+
+
+def test_cdp_shot_coord_space_q06(monkeypatch):
+    """Q06：全页截图的坐标是文档坐标——收据必须带 coord_space 与
+    scroll_y，hint 不得再说"就是点击坐标"。"""
+    from ashot import cdp as cdp_mod
+    tall = output.bgra_to_png(100, 900, b"\x10\x20\x30\xff" * (100 * 900))
+    data = base64.b64encode(tall).decode()
+
+    def fake_call(ws, method, params=None, timeout=30):
+        return {"data": data}
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 400, "vh": 300, "content_w": 100, "content_h": 900,
+         "scroll_y": 123, "scroll_x": 0}, 2))
+    png, info = cdp_mod.shot(9222, ws="ws://x/devtools/page/1", stitch=False)
+    assert info["coord_space"] == "document"
+    assert info["scroll_y"] == 123
+    assert "文档坐标" in info["hint"]
+
+    short = output.bgra_to_png(100, 300, b"\x10\x20\x30\xff" * (100 * 300))
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"data": base64.b64encode(short).decode()})
+    # 内容高==视口高：全页截图与视口截图等价
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 400, "vh": 300, "content_w": 100, "content_h": 300,
+         "scroll_y": 0, "scroll_x": 0}, 2))
+    _, info2 = cdp_mod.shot(9222, ws="ws://x/devtools/page/1", stitch=False)
+    assert info2["coord_space"] == "viewport"
+
+    # 审计 S1：dpr 求值失败是真实路径（evaluate 单独 try，vw/vh 仍在）。
+    # 旧实现 `dpr or 1` 会把 400×600 的视口截图标成 document、to_css 错一倍。
+    big = output.bgra_to_png(400, 600, b"\x10\x20\x30\xff" * (400 * 600))
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"data": base64.b64encode(big).decode()})
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 400, "vh": 300, "content_w": 400, "content_h": 300,
+         "scroll_y": 0, "scroll_x": 0}, None))
+    _, info3 = cdp_mod.shot(9222, ws="ws://x/devtools/page/1", fullpage=False)
+    assert info3["coord_space"] == "viewport", info3
+    assert info3["to_css_estimated"] is True
+    assert "退化估算" in info3["hint"]
+
+    # 二轮审查（实测抖音页）：content_h 比视口高，但 Chrome 把
+    # captureBeyondViewport 夹到了视口高——图像 CSS 高 == vh，不能因为
+    # content_h 大就谎报"文档坐标"。
+    clamped = output.bgra_to_png(400, 600, b"\x10\x20\x30\xff" * (400 * 600))
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"data": base64.b64encode(clamped).decode()})
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 400, "vh": 300, "content_w": 400, "content_h": 1632,
+         "scroll_y": 0, "scroll_x": 0}, 2))
+    _, info4 = cdp_mod.shot(9222, ws="ws://x/devtools/page/1", stitch=False)
+    assert info4["coord_space"] == "viewport", info4
+    assert "只截到视口" in info4["hint"]
+
+
+def test_annotate_default_out_q07():
+    """Q07：父目录带点、basename 无点时不得把路径截到上一级。"""
+    assert annotate.default_out(r"C:\a\my.dir\shot") == \
+        r"C:\a\my.dir\shot_annotated.png"
+    assert annotate.default_out(r"C:\a\b\shot.png") == \
+        r"C:\a\b\shot_annotated.png"
+    assert annotate.default_out(r"C:\a\b\shot") == \
+        r"C:\a\b\shot_annotated.png"
+
+
+def test_cli_annotate_dotted_dir_q07(tmp_path):
+    """Q07 端到端：父目录带点、basename 无点时，产物落回同目录。"""
+    d = tmp_path / "my.dir"
+    d.mkdir()
+    src = d / "shot"
+    src.write_bytes(_img(40, 30))
+    r = subprocess.run(
+        [sys.executable, "-m", "ashot.cli", "annotate", str(src),
+         json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 4, "h": 4}])],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    assert (d / "shot_annotated.png").exists(), r.stdout
+    assert not (tmp_path / "my_annotated.png").exists(), "仍写到上一级"
+
+
+def test_degrade_reason_surfaced_q08(monkeypatch, tmp_path):
+    """Q08：矢量路失败要留原因——"设计内降级"与"环境坏了"不再同形。"""
+    from ashot import annotate_gdi, mcp as mcp_mod
+    monkeypatch.setattr(annotate_gdi, "_RENDER_PS",
+                        str(tmp_path / "no_such_renderer.ps1"))
+    src = str(tmp_path / "in.png")
+    open(src, "wb").write(_tiny_png())
+    stats = {}
+    out, backend, n = annotate_gdi.annotate_png_vector(
+        _tiny_png(), [{"kind": "rect", "x": 0, "y": 0, "w": 2, "h": 2}],
+        stats=stats)
+    assert backend == "pixel"
+    assert stats["degrade_reason"] and "ps_rc" in stats["degrade_reason"]
+    rec = json.loads(mcp_mod._annotate(
+        src, json.dumps([{"kind": "rect", "x": 0, "y": 0, "w": 2, "h": 2}]),
+        out=str(tmp_path / "o.png"), preview=False))
+    assert rec["backend_fallback"] is True
+    assert rec["degrade_reason"]
+
+
+def test_capture_keeps_gdi_error_q09(monkeypatch):
+    """Q09：GDI 主路失败原因必须带出（兜底成功也留在收据里）。"""
+    from ashot import capture
+    monkeypatch.setattr(capture, "_shot_gdi",
+                        lambda box: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(capture, "_shot_ps", lambda box: ("png", b"PNGDATA"))
+    r = capture.shot("area", area=[0, 0, 10, 10])
+    assert r["kind"] == "png" and r["png"] == b"PNGDATA"
+    assert r["gdi_error"].startswith("OSError") and "boom" in r["gdi_error"]
+    assert r["box_source"] == "area"
+
+    def dead(box):
+        raise RuntimeError("ps dead")
+
+    monkeypatch.setattr(capture, "_shot_ps", dead)
+    with pytest.raises(RuntimeError) as ei:
+        capture.shot("area", area=[0, 0, 10, 10])
+    assert "GDI 主路" in str(ei.value) and "ps dead" in str(ei.value)
+
+
+def test_win_box_requires_foreground_q17(monkeypatch):
+    """Q17：没有前台窗口时给可读错误，不是用 hwnd=0 去 GetWindowRect。"""
+    from ashot import capture
+
+    class _Fake:
+        @staticmethod
+        def GetForegroundWindow():
+            return 0
+
+        @staticmethod
+        def SetProcessDPIAware():
+            pass
+
+    monkeypatch.setattr(capture, "U32", _Fake)
+    with pytest.raises(RuntimeError) as ei:
+        capture._win_box()
+    assert "前台窗口" in str(ei.value)
+
+
+def test_click_start_point_q12():
+    """Q12：接近轨迹起点不再恒为 (0,0)；seed 决定方位、start 可覆盖。"""
+    from ashot import cdp as cdp_mod
+    import math
+    p1 = cdp_mod._start_point(500, 500, seed=1)
+    p2 = cdp_mod._start_point(500, 500, seed=2)
+    r1 = math.hypot(p1[0] - 500, p1[1] - 500)
+    assert 140 <= r1 <= 420, r1          # 起步半径契约
+    a1 = math.atan2(p1[1] - 500, p1[0] - 500)
+    a2 = math.atan2(p2[1] - 500, p2[0] - 500)
+    assert abs(a1 - a2) > 0.05, "不同 seed 的起步方位相同（随机方位没锁住）"
+
+    a = cdp_mod.click_events(400, 300, seed=1)
+    b = cdp_mod.click_events(400, 300, seed=2)
+    assert (a[0]["x"], a[0]["y"]) != (b[0]["x"], b[0]["y"])
+    assert not (a[0]["x"] < 5 and a[0]["y"] < 5), "仍从左上角出发"
+    c = cdp_mod.click_events(400, 300, seed=1, start=(40, 60))
+    assert math.hypot(c[0]["x"] - 40, c[0]["y"] - 60) < \
+        math.hypot(c[0]["x"] - 400, c[0]["y"] - 300)
+    moved = [e for e in c if e["type"] == "mouseMoved"]
+    assert (moved[-1]["x"], moved[-1]["y"]) == (400.0, 300.0)
+
+
+def test_text_wrap_and_bounds_warn_q15(monkeypatch):
+    """Q15：text 带 w 走 GDI+ 原生换行（实测 bbox 宽度受 w 约束），
+    出界进 bounds_warn；像素降级路同样认 w。"""
+    from ashot import annotate_gdi, vector
+    shape = vector.compile_ops([{"kind": "text", "x": 0, "y": 0,
+                                 "text": "a", "w": 50}])["shapes"][0]
+    assert shape["w"] == 50.0
+
+    stats = {}
+    out, backend, _ = annotate_gdi.annotate_png_vector(
+        _img(300, 120),
+        [{"kind": "text", "x": 10, "y": 10, "size": 16, "w": 100,
+          "text": "word " * 20}], stats=stats)
+    box = stats["boxes"][0]
+    assert backend == "gdi+"
+    assert box["w"] <= 102, box        # 换行后宽度被 w 约束
+    assert box["h"] > 20, box          # 多行
+
+    stats2 = {}
+    annotate_gdi.annotate_png_vector(
+        _img(300, 120),
+        [{"kind": "text", "x": 290, "y": 10, "size": 20,
+          "text": "overflowing"}], stats=stats2)
+    assert stats2["bounds_warn"], "越界没告警"
+    assert "超出" in stats2["bounds_warn"][0]
+
+    # 像素路：w 生效 -> 墨迹不越过 x+w 太多
+    px_png = annotate.annotate_png(
+        _img(200, 200),
+        [{"kind": "text", "x": 10, "y": 10, "size": 16, "w": 60,
+          "text": "A" * 40}])
+    _, _, px = annotate._decode_png(px_png)
+    max_x = 0
+    for y in range(200):
+        for x in range(200):
+            i = (y * 200 + x) * 4
+            # 底色 (0x30,0x60,0x90) 不算墨；只认红色字形
+            if px[i] > 150 and px[i + 1] < 120:
+                max_x = max(max_x, x)
+    assert max_x <= 10 + 60 + 20, max_x
+
+
+def test_decode_rgb_and_palette_q21():
+    """Q21：像素路不再只吃 RGBA——RGB/调色板 PNG 也能解。"""
+    import struct
+    import zlib
+
+    def _chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    def rgb_png(w, h):
+        raw = b"".join(b"\x00" + bytes([10, 20, 30]) * w for _ in range(h))
+        return (b"\x89PNG\r\n\x1a\n"
+                + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + _chunk(b"IDAT", zlib.compress(raw))
+                + _chunk(b"IEND", b""))
+
+    def pal_png(w, h):
+        raw = b"".join(b"\x00" + bytes([0, 1]) * (w // 2) for _ in range(h))
+        plte = bytes([255, 0, 0, 0, 255, 0])
+        return (b"\x89PNG\r\n\x1a\n"
+                + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0))
+                + _chunk(b"PLTE", plte)
+                + _chunk(b"IDAT", zlib.compress(raw))
+                + _chunk(b"IEND", b""))
+
+    w, h, px = annotate._decode_png(rgb_png(4, 3))
+    assert (w, h, tuple(px[:4])) == (4, 3, (10, 20, 30, 255))
+    w, h, px = annotate._decode_png(pal_png(4, 3))
+    assert tuple(px[0:4]) == (255, 0, 0, 255)
+    assert tuple(px[4:8]) == (0, 255, 0, 255)
+
+    # 审计：每行 filter=0 锁不住 bpp（把步长改回 4 的 mutant 能存活）——
+    # 补一条 Sub(filter=1) 的 RGB 与调色板图。
+    def sub_rgb_png(w, h, color=(10, 20, 30)):
+        raw = bytearray()
+        for _ in range(h):
+            row = bytes(color) * w
+            enc = bytearray(row)
+            for i in range(len(row) - 1, 2, -1):   # 倒序：左侧仍是原值
+                enc[i] = (row[i] - row[i - 3]) & 0xFF
+            raw.append(1)
+            raw += enc
+        return (b"\x89PNG\r\n\x1a\n"
+                + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + _chunk(b"IDAT", zlib.compress(bytes(raw)))
+                + _chunk(b"IEND", b""))
+
+    def sub_pal_png(w, h):
+        raw = bytearray()
+        for _ in range(h):
+            row = bytes([0, 1, 0, 1][:w])
+            enc = bytearray(row)
+            for i in range(len(row) - 1, 0, -1):   # bpp=1
+                enc[i] = (row[i] - row[i - 1]) & 0xFF
+            raw.append(1)
+            raw += enc
+        return (b"\x89PNG\r\n\x1a\n"
+                + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0))
+                + _chunk(b"PLTE", bytes([255, 0, 0, 0, 255, 0]))
+                + _chunk(b"IDAT", zlib.compress(bytes(raw)))
+                + _chunk(b"IEND", b""))
+
+    w, h, px = annotate._decode_png(sub_rgb_png(4, 2))
+    assert (w, h, tuple(px[:4])) == (4, 2, (10, 20, 30, 255))
+    w, h, px = annotate._decode_png(sub_pal_png(4, 2))
+    assert tuple(px[0:4]) == (255, 0, 0, 255)
+    assert tuple(px[4:8]) == (0, 255, 0, 255)
+
+
+def test_eval_value_type_q14(monkeypatch):
+    """Q14：收据带 value_type，undefined 与不可序列化对象可区分。"""
+    from ashot import cdp as cdp_mod
+    from ashot import mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "_resolve_ws", lambda *a, **k: "ws://x")
+    monkeypatch.setattr(cdp_mod, "evaluate",
+                        lambda *a, **k: {"result": {"type": "undefined"}})
+    rec = json.loads(mcp_mod._cdp_eval("1"))
+    assert rec["value_type"] == "undefined" and "note" in rec
+    monkeypatch.setattr(cdp_mod, "evaluate",
+                        lambda *a, **k: {"result": {"type": "object"}})
+    rec = json.loads(mcp_mod._cdp_eval("document"))
+    assert rec["value_type"] == "object" and "不可序列化" in rec["note"]
+
+
+def test_receipt_stamped_with_ver_and_target_q18():
+    """Q18/Q04：收据单一出口盖 ver（识破旧进程）与 target（目标身份）。"""
+    import ashot
+    from ashot import mcp as mcp_mod
+    mcp_mod._LAST_TARGET.clear()
+    rec = json.loads(mcp_mod._stamp('{"ok": true}'))
+    assert rec["ver"] == ashot.__version__
+    mcp_mod._LAST_TARGET.update({"port": 9222, "title": "T", "url": "u"})
+    try:
+        rec = json.loads(mcp_mod._stamp('{"ok": true}'))
+        assert rec["target"]["port"] == 9222
+        # 非 JSON 文本原样返回（不炸）
+        assert mcp_mod._stamp("plain text") == "plain text"
+    finally:
+        mcp_mod._LAST_TARGET.clear()
+
+
+def test_mcp_error_receipt_stamped_q18():
+    """Q18 审计：错误收据也必须带 ver——最需要识破旧进程的时候不能没有。"""
+    lines = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "ashot_annotate",
+                    "arguments": {"image": r"Z:\no-such-dir\nope.png",
+                                  "ops": "[]", "preview": False}}},
+    ]
+    inp = "\n".join(json.dumps(x) for x in lines) + "\n"
+    r = subprocess.run([sys.executable, "ashot_mcp.py"], input=inp.encode(),
+                       capture_output=True, cwd=ROOT, timeout=120)
+    outs = [json.loads(x) for x in r.stdout.decode("utf-8", "replace").splitlines()]
+    err = [o for o in outs if o.get("id") == 2][0]
+    assert err["result"]["isError"] is True
+    rec = json.loads(err["result"]["content"][0]["text"])
+    assert rec["ok"] is False and rec["ver"] == __version__
+
+
+def test_preview_budget_and_default_q16():
+    """Q16：preview 缺省开、预算压到 200KB、小图不放大。"""
+    from ashot import cli, mcp as mcp_mod
+    assert output.PREVIEW_MAX_BYTES_DEFAULT == 200 * 1024
+    assert mcp_mod.TOOLS["ashot_shot"]["inputSchema"]["properties"][
+        "preview"]["type"] == "boolean"
+    jpeg, info = output.preview_jpeg(_img(800, 600))
+    assert info["width"] == 800 and info["fit"] is True
+    # v0.2.6 Q22：--ops 不得再被 --ops-file 前缀匹配吞掉（应报用法错误）
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["annotate", "x.png", "--ops", "[]"])
+    assert ei.value.code == 2
+
+
+def test_show_keeps_500k_budget_q16(monkeypatch, tmp_path):
+    """Q16 边界：show 是给人看的展示件，预算保持 500KB；
+    200KB 只用于 MCP preview（模型自检），两个口径别混。"""
+    from ashot import show
+    seen = {}
+
+    def fake(png, width=1200, max_bytes=None):
+        seen["max_bytes"] = max_bytes
+        seen["width"] = width
+        return b"\xff\xd8jpeg", {"width": 10, "quality": 85,
+                                 "bytes": 4, "fit": True}
+
+    monkeypatch.setattr(show.output, "preview_jpeg", fake)
+    src = tmp_path / "i.png"
+    src.write_bytes(_tiny_png())
+    show.build_html(str(src), "t", str(tmp_path / "o"))
+    assert seen["max_bytes"] == 500 * 1024
+    assert seen["width"] == 1200
+
+
+def test_cli_cdp_shot_prints_coords(monkeypatch, tmp_path, capsys):
+    """Q22：CLI cdp-shot 必须输出 to_css/coord_space（旧版只打 fullpage）。"""
+    from ashot import cdp as cdp_mod
+    from ashot import cli
+    png = output.bgra_to_png(10, 10, b"\x00\x00\x00\xff" * 100)
+    monkeypatch.setattr(cdp_mod, "pick_port",
+                        lambda port, **k: (9222, {"port": 9222,
+                                                  "source": "explicit",
+                                                  "warnings": []}))
+    monkeypatch.setattr(cdp_mod, "shot", lambda *a, **k: (png, {
+        "fullpage": True, "w": 10, "h": 10, "vw": 5, "vh": 5, "dpr": 2,
+        "to_css": 0.5, "coord_space": "viewport", "hint": "h"}))
+    rc = cli.main(["cdp-shot", "--port", "9222",
+                   "--out", str(tmp_path / "c.png")])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "to_css: 0.5" in err and "coord_space: viewport" in err
+
+def test_pixel_fallback_bounds_warn_q15(monkeypatch, tmp_path):
+    """Q15 另一半：矢量路降级到像素画布时，出界也要告警（估算 bbox）。"""
+    from ashot import annotate_gdi
+    monkeypatch.setattr(annotate_gdi, "_RENDER_PS",
+                        str(tmp_path / "gone.ps1"))
+    stats = {}
+    out, backend, _ = annotate_gdi.annotate_png_vector(
+        _img(200, 120),
+        [{"kind": "text", "x": 180, "y": 10, "size": 20,
+          "text": "overflow right"}], stats=stats)
+    assert backend == "pixel"
+    assert stats["bounds_warn"], "像素降级路仍静默出界"
+    assert "超出" in stats["bounds_warn"][0]
+    assert stats["boxes"] and stats["boxes"][0]["x"] == 180
+
+
+def test_pick_port_tolerates_minimal_discover_q04(monkeypatch):
+    """Q04 健壮性：discover 只回 ports 时 pick_port 不 KeyError。"""
+    from ashot import cdp as cdp_mod
+    monkeypatch.setattr(cdp_mod, "discover",
+                        lambda: {"ports": [9301], "hint": "x"})
+    p, info = cdp_mod.pick_port(None)
+    assert p == 9301 and info["source"] == "scan" and info["warnings"] == []
+
+def test_layout_prefers_css_content_size_q06(monkeypatch):
+    """Q06 单位锁：getLayoutMetrics 的 contentSize 是设备像素（已废弃），
+    cssContentSize 才是 CSS——旧实现取前者会把整页高报成 dpr 倍。"""
+    from ashot import cdp as cdp_mod
+    metrics = {"cssLayoutViewport": {"clientWidth": 800, "clientHeight": 600},
+               "layoutViewport": {"clientWidth": 1600, "clientHeight": 1200},
+               "contentSize": {"width": 1882, "height": 6000},
+               "cssContentSize": {"width": 941, "height": 3000},
+               "cssVisualViewport": {}}
+
+    def fake_call(ws, method, params=None, timeout=15):
+        if method == "Page.getLayoutMetrics":
+            return metrics
+        return {"result": {"value": {"dpr": 2, "scrollY": 0, "scrollX": 0}}}
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    lay, dpr = cdp_mod.layout("ws://x")
+    assert (lay["content_w"], lay["content_h"]) == (941, 3000), lay
+    assert lay["content_source"] == "css"
+    assert (lay["vw"], lay["vh"]) == (800, 600)
+
+    # 老协议只有设备像素字段 -> 按 dpr 折算
+    metrics2 = {"layoutViewport": {"clientWidth": 1600, "clientHeight": 1200},
+                "contentSize": {"width": 1882, "height": 6000}}
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda ws, m, p=None, timeout=15:
+                        metrics2 if m == "Page.getLayoutMetrics"
+                        else {"result": {"value": {"dpr": 2}}})
+    lay2, _ = cdp_mod.layout("ws://x")
+    assert (lay2["content_w"], lay2["content_h"]) == (941, 3000), lay2
+    assert lay2["content_source"] == "device/dpr"
+
+
+def test_shot_marks_truncated_fullpage_q06(monkeypatch):
+    """页太高 / 只截到视口时，收据必须亮 fullpage_truncated，不假装整页。"""
+    from ashot import cdp as cdp_mod
+    layout = lambda ws, timeout=15: (
+        {"vw": 400, "vh": 300, "content_w": 400, "content_h": 3000,
+         "scroll_y": 0, "scroll_x": 0}, 2)
+    monkeypatch.setattr(cdp_mod, "layout", layout)
+
+    # 只截到视口（图像 300 CSS == vh）：坐标是视口坐标，但整页没拍全
+    viewport_png = output.bgra_to_png(400, 600, b"\x10\x20\x30\xff" * (400 * 600))
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"data": base64.b64encode(viewport_png).decode()})
+    _, info = cdp_mod.shot(9222, ws="ws://x", stitch=False)
+    assert info["coord_space"] == "viewport"
+    assert info["fullpage_truncated"] is True
+    assert "只截到视口" in info["hint"]
+
+    # 拍到一部分（图像 1000 CSS > vh，但 < 整页 3000）：文档坐标 + 截断标记
+    partial = output.bgra_to_png(400, 2000, b"\x10\x20\x30\xff" * (400 * 2000))
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"data": base64.b64encode(partial).decode()})
+    _, info2 = cdp_mod.shot(9222, ws="ws://x", stitch=False)
+    assert info2["coord_space"] == "document"
+    assert info2["fullpage_truncated"] is True
+    assert "只截到 1000 CSS" in info2["hint"] or "只截到" in info2["hint"]
+
+def _band_png(w, h, band):
+    return output.bgra_to_png(w, h, bytes([0, 0, band * 40, 255]) * (w * h))
+
+
+def _stitch_stub(monkeypatch, cdp_mod, state):
+    def fake_call(ws, method, params=None, timeout=30):
+        if method == "Page.captureScreenshot":
+            assert params.get("captureBeyondViewport") is False
+            return {"data": base64.b64encode(
+                _band_png(50, 50, state["scroll"] // 50)).decode()}
+        if method == "Runtime.evaluate":
+            expr = params.get("expression", "")
+            if "scrollTop=" in expr:
+                y = int(expr.split("scrollTop=")[1].split(";")[0])
+                state["scroll"] = y
+                return {"result": {"value": y}}
+            return {"result": {"value": state["scroll"]}}
+        raise AssertionError("unexpected method %r" % method)
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+
+
+def test_stitch_fullpage_scroll_and_compose_q22(monkeypatch):
+    """超长页：按视口滚动逐屏拍、按实际 scrollY 拼、拍完还原滚动位置。"""
+    from ashot import cdp as cdp_mod
+    state = {"scroll": 0}
+    _stitch_stub(monkeypatch, cdp_mod, state)
+    lay = {"vw": 50, "vh": 50, "content_w": 50, "content_h": 200,
+           "scroll_y": 0}
+    png, info = cdp_mod._stitch_fullpage("ws://x", lay, 1)
+    assert info["stitched"] is True and info["shots"] == 4
+    assert (info["w"], info["h"]) == (50, 200)
+    _, _, px = annotate._decode_png(png)
+    assert px[0] == 0            # y=0  -> band 0
+    assert px[(60 * 50) * 4] == 40    # y=60 -> band 1
+    assert px[(110 * 50) * 4] == 80   # y=110 -> band 2
+    assert px[(160 * 50) * 4] == 120  # y=160 -> band 3
+    assert state["scroll"] == 0, "拼接后没还原滚动位置"
+
+
+def test_shot_auto_stitches_truncated_fullpage_q22(monkeypatch):
+    """单张只截到视口且页更高时，shot 自动改走拼接并如实标 stitched。"""
+    from ashot import cdp as cdp_mod
+    state = {"scroll": 0, "full": 0}
+
+    def fake_call(ws, method, params=None, timeout=30):
+        if method == "Page.captureScreenshot":
+            if params.get("captureBeyondViewport"):
+                state["full"] += 1
+                return {"data": base64.b64encode(
+                    _band_png(50, 50, 0)).decode()}
+            return {"data": base64.b64encode(
+                _band_png(50, 50, state["scroll"] // 50)).decode()}
+        if method == "Runtime.evaluate":
+            expr = params.get("expression", "")
+            if "scrollTop=" in expr:
+                y = int(expr.split("scrollTop=")[1].split(";")[0])
+                state["scroll"] = y
+                return {"result": {"value": y}}
+            return {"result": {"value": state["scroll"]}}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 50, "vh": 50, "content_w": 50, "content_h": 200,
+         "scroll_y": 0}, 1))
+    png, info = cdp_mod.shot(9222, ws="ws://x")
+    assert state["full"] == 1, "先走了单张全页路径"
+    assert info["stitched"] is True and info["h"] == 200
+    assert info["coord_space"] == "document"
+    assert info["shots"] == 4
+
+    # stitch=False：不拼接，如实保留截断标记
+    state.update(scroll=0, full=0)
+    _, info2 = cdp_mod.shot(9222, ws="ws://x", stitch=False)
+    assert "stitched" not in info2
+    assert info2.get("fullpage_truncated") is True
+
+def test_shot_stitches_when_single_capture_fails_q22(monkeypatch):
+    """单张 captureBeyondViewport 被拒（"Unable to capture screenshot"）
+    时，自动改走滚动拼接。"""
+    from ashot import cdp as cdp_mod
+    state = {"scroll": 0}
+
+    def fake_call(ws, method, params=None, timeout=30):
+        if method == "Page.captureScreenshot":
+            if params.get("captureBeyondViewport"):
+                raise RuntimeError("Unable to capture screenshot")
+            return {"data": base64.b64encode(
+                _band_png(50, 50, state["scroll"] // 50)).decode()}
+        if method == "Runtime.evaluate":
+            expr = params.get("expression", "")
+            if "scrollTop=" in expr:
+                y = int(expr.split("scrollTop=")[1].split(";")[0])
+                state["scroll"] = y
+                return {"result": {"value": y}}
+            return {"result": {"value": state["scroll"]}}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    monkeypatch.setattr(cdp_mod, "layout", lambda ws, timeout=15: (
+        {"vw": 50, "vh": 50, "content_w": 50, "content_h": 200,
+         "scroll_y": 0}, 1))
+    png, info = cdp_mod.shot(9222, ws="ws://x")
+    assert info["stitched"] is True and info["h"] == 200 and info["shots"] == 4
+    # stitch=False 时如实抛出，不静默吞
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError):
+        cdp_mod.shot(9222, ws="ws://x", stitch=False)
+
+def test_preview_caps_height_for_long_pages_q16():
+    """超长页预览：只按宽度缩仍会出 2.8MB 的"缩图"（实弹），必须同时限高。"""
+    tall = output.bgra_to_png(746, 20000, b"\x20\x40\x60\xff" * (746 * 20000))
+    jpeg, info = output.preview_jpeg(tall)
+    assert info["height"] <= 4000, info
+    assert info["width"] <= 746
+    assert info["bytes"] <= output.PREVIEW_MAX_BYTES_DEFAULT and info["fit"] is True, info
+
+# ---------- v0.2.7 通用视觉 / DOM 原语 ----------
+
+def _solid(w, h, rgb=(40, 80, 120)):
+    return output.bgra_to_png(w, h, bytes([rgb[2], rgb[1], rgb[0], 255]) * (w * h))
+
+
+def _with_block(w, h, x, y, bw, bh, rgb2=(255, 0, 0)):
+    base = bytes([120, 80, 40, 255]) * (w * h)
+    px = bytearray(base)
+    for yy in range(y, min(y + bh, h)):
+        for xx in range(x, min(x + bw, w)):
+            i = (yy * w + xx) * 4
+            px[i:i + 4] = bytes([rgb2[2], rgb2[1], rgb2[0], 255])
+    return output.bgra_to_png(w, h, bytes(px))
+
+
+def test_vision_digest_and_stability():
+    """指纹：sha 精确、dhash 对整体亮度平移稳定、改内容 dhash 变。"""
+    from ashot import vision
+    a = _solid(120, 80, (40, 80, 120))
+    b = _solid(120, 80, (80, 120, 160))          # 整体变亮
+    c = _with_block(120, 80, 50, 30, 30, 20)        # 内容变化（块够大）
+    da, db, dc = vision.digest(a), vision.digest(b), vision.digest(c)
+    assert da["sha256"] != db["sha256"]
+    assert da["dhash"] == db["dhash"], "整体亮度平移不该改变 dHash"
+    assert da["dhash"] != dc["dhash"], "内容变化 dHash 必须变"
+    assert vision.hamming(da["dhash"], da["dhash"]) == 0
+    assert 0 < vision.hamming(da["dhash"], dc["dhash"]) <= 64
+
+
+def test_vision_diff_identical_and_bbox():
+    """diff：同图 same/ratio=0；单点变化 ratio 精确、bbox 精确。"""
+    from ashot import vision
+    a = _solid(100, 50)
+    b = _with_block(100, 50, 30, 20, 2, 2)
+    r0 = vision.diff(a, a)
+    assert r0["same"] is True and r0["ratio"] == 0 and r0["bbox"] is None
+    r = vision.diff(a, b)
+    assert r["same"] is False and r["changed_px"] == 4
+    assert r["ratio"] == round(4 / 5000.0, 6)
+    assert r["bbox"] == [30, 20, 2, 2]
+    jpeg_like = vision.diff(a, b, make_image=True)
+    _, _, px = annotate._decode_png(jpeg_like["image"])
+    i = (20 * 100 + 30) * 4
+    assert (px[i], px[i + 1], px[i + 2]) == (255, 0, 0), "差异图像素不是红色"
+
+
+def test_vision_diff_size_mismatch():
+    """尺寸不同：只比重叠区，same 恒 False，并如实标 size_mismatch。"""
+    from ashot import vision
+    a = _solid(100, 50)
+    b = _solid(80, 40)
+    r = vision.diff(a, b)
+    assert r["size_mismatch"] is True and r["same"] is False
+    assert r["dims"] == [[100, 50], [80, 40]]
+    assert "尺寸不同" in r["note"]
+
+
+def test_dom_element_rect_stub(monkeypatch):
+    """element_rect：字段归一（local→x/y）、中心点、选择器 JSON 转义。"""
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    seen = {}
+    payload = {"found": True, "tag": "button", "text": "ok",
+               "local_x": 100, "local_y": 50, "w": 80, "h": 40,
+               "visible": True, "visibility_source": "checkVisibility",
+               "in_viewport": True, "visible_ratio": 1.0, "occluded": False,
+               "pointer_events": "auto", "dpr": 2, "scroll_x": 0,
+               "scroll_y": 10, "doc_scroll_h": 900}
+
+    def fake_call(ws, method, params=None, timeout=15):
+        seen["expr"] = params.get("expression", "")
+        seen["await"] = params.get("awaitPromise")
+        return {"result": {"value": payload}}
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    rec = dom.element_rect("ws://x", 'a[href="q"]')
+    assert rec["x"] == 100 and rec["y"] == 50 and rec["cx"] == 140
+    assert rec["cy"] == 70 and rec["dpr"] == 2
+    assert '"a[href=\\"q\\"]"' in seen["expr"], seen["expr"][:120]
+    assert "checkVisibility" in seen["expr"] and "elementFromPoint" in seen["expr"]
+    assert "in_viewport" in seen["expr"]
+
+
+def test_dom_element_rect_not_found(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": {"found": False,
+                                                             "error": "nope"}}})
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError) as ei:
+        dom.element_rect("ws://x", "#missing")
+    assert "未找到" in str(ei.value)
+
+
+def test_dom_element_rect_scroll(monkeypatch):
+    """scroll=True：先 awaitPromise 的 scrollIntoView，再量一次。"""
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    calls = []
+
+    def fake_call(ws, method, params=None, timeout=15):
+        calls.append(params.get("awaitPromise"))
+        if len(calls) == 1:
+            return {"result": {"value": {"found": True}}}
+        return {"result": {"value": {"found": True, "local_x": 0, "local_y": 0,
+                                     "w": 10, "h": 10, "visible": True}}}
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    dom.element_rect("ws://x", "#a", scroll=True)
+    assert calls == [True, False]
+
+
+def test_dom_cross_origin_frame_map(monkeypatch):
+    """跨域同进程：一个 Session 内 isolated world 求值 + 内容原点相加。"""
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    inner = {"found": True, "local_x": 20, "local_y": 10, "w": 100, "h": 40,
+             "visible": True, "in_viewport": True}
+
+    class FakeSession:
+        def __init__(self, ws, timeout=30):
+            self.ws = ws
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def command(self, method, params=None):
+            if method == "Runtime.evaluate":
+                if params.get("contextId") == 5:
+                    return {"result": {"value": inner}}
+                return {"result": {"value": {"found": False,
+                                             "cross_origin": True}}}
+            return {
+                "DOM.enable": {},
+                "DOM.getDocument": {"root": {"nodeId": 1}},
+                "DOM.querySelector": {"nodeId": 7},
+                "DOM.describeNode": {"node": {"frameId": "F1"}},
+                "DOM.getBoxModel": {"model": {"content": [105, 505, 405, 505,
+                                                          405, 705, 105, 705]}},
+                "Page.createIsolatedWorld": {"executionContextId": 5},
+            }[method]
+
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": {"found": False,
+                                                             "cross_origin": True,
+                                                             "chain": [{"selector": "#f"}]}}})
+    monkeypatch.setattr(cdp_mod, "Session", FakeSession)
+    rec = dom.frame_element_rect("ws://x", "#f", "#inner")
+    assert rec["cross_origin"] is True
+    assert rec["x"] == 125 and rec["y"] == 515
+    assert rec["cx"] == 175 and rec["cy"] == 535
+    assert rec["frame_chain"][0]["cross_origin"] is True
+
+
+def test_dom_oopif_reports_unsupported(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    import pytest as _pytest
+
+    class FakeSession:
+        def __init__(self, ws, timeout=30):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def command(self, method, params=None):
+            if method == "Page.createIsolatedWorld":
+                raise RuntimeError("target detached / OOPIF")
+            return {
+                "DOM.enable": {},
+                "DOM.getDocument": {"root": {"nodeId": 1}},
+                "DOM.querySelector": {"nodeId": 7},
+                "DOM.describeNode": {"node": {"frameId": "F2"}},
+                "DOM.getBoxModel": {"model": {"content": [10, 20, 30, 20, 30, 40,
+                                                          10, 40]}},
+            }[method]
+
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": {"found": False,
+                                                             "cross_origin": True}}})
+    monkeypatch.setattr(cdp_mod, "Session", FakeSession)
+    with _pytest.raises(RuntimeError) as ei:
+        dom.frame_element_rect("ws://x", "#f", "#inner")
+    assert "oopif_unsupported" in str(ei.value)
+
+
+def test_dom_frames_flat(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    tree = {"frameTree": {"frame": {"id": "root", "url": "https://a/"},
+                          "childFrames": [
+                              {"frame": {"id": "c1", "url": "https://b/",
+                                         "name": "f1"}}]}}
+
+    class FakeSession:
+        def __init__(self, ws, timeout=30):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def command(self, method, params=None):
+            return {
+                "DOM.enable": {},
+                "Page.getFrameTree": tree,
+                "DOM.getFrameOwner": {"backendNodeId": 9},
+                "DOM.getBoxModel": {"model": {"content": [100, 200, 300, 200,
+                                                          300, 400, 100, 400]}},
+            }[method]
+
+    monkeypatch.setattr(cdp_mod, "Session", FakeSession)
+    fs = dom.frames("ws://x")
+    assert [f["id"] for f in fs] == ["root", "c1"]
+    assert fs[1]["parent_id"] == "root" and fs[1]["depth"] == 1
+    assert fs[1]["rect"] == {"x": 100, "y": 200, "w": 200, "h": 200}
+
+
+def test_cli_hash_and_diff(tmp_path):
+    import subprocess
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    a.write_bytes(_solid(60, 40))
+    b.write_bytes(_with_block(60, 40, 10, 10, 3, 3))
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "hash", str(a)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stdout)
+    assert len(rec["sha256"]) == 64 and rec["dhash"].startswith("0x")
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "diff", str(a), str(b)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stdout)
+    assert rec["same"] is False and rec["changed_px"] == 9

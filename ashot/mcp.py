@@ -13,18 +13,45 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, annotate_gdi, capture, cdp, fonts, output, show  # noqa: E402
+from ashot import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,  # noqa: E402
+                   output, show, vision)
+from ashot._coerce import as_bool, as_int  # noqa: E402
 
 TOOLS = {}
 
+# 参数名 -> 语义类型（v0.2.6 审计）：这些是像素坐标/计数/端口，默认值
+# 为 None 时也能给出正确 schema，别让 agent 猜"要不要加引号"。
+_NUMERIC_PARAMS = frozenset((
+    "port", "screen", "index", "x", "y", "x1", "y1", "x2", "y2",
+    "from_x", "from_y", "dx", "dy", "count", "steps",
+))
+
 
 def _tool(fn):
-    # 简易 schema：从默认值推 required/optional；统一 string，工具内自转型
+    """简易 schema：从默认值推 required/optional + **按默认值推类型**
+    （v0.2.6 Q13：旧实现一律 {"type":"string"}，连 x/y/count 都是字符串，
+    agent 得猜要不要加引号）。无默认值的参数仍按 string 声明（是否数字
+    由工具内自转型决定），有默认值的按 bool/int/float/str 声明；
+    坐标/端口/计数类参数按名字兜底为 integer（默认 None 也判得准）。"""
     code = fn.__code__
     names = code.co_varnames[:code.co_argcount]
     defaults = fn.__defaults__ or ()
     req = list(names[:len(names) - len(defaults)])
-    props = {n: {"type": "string"} for n in names}
+    props = {}
+    dmap = dict(zip(names[len(names) - len(defaults):], defaults))
+    for n in names:
+        d = dmap.get(n, None)
+        if isinstance(d, bool):
+            t = "boolean"
+        elif isinstance(d, int):
+            t = "integer"
+        elif isinstance(d, float):
+            t = "number"
+        elif n in _NUMERIC_PARAMS:
+            t = "integer"
+        else:
+            t = "string"
+        props[n] = {"type": t}
     TOOLS[fn.__name__] = {
         "name": fn.__name__,
         "description": fn.__doc__ or "",
@@ -46,17 +73,36 @@ def _content_with_image(receipt_text, jpeg):
     ]
 
 
+def _parse_area(area):
+    """area 三种写法都认（v0.2.6 实弹）：JSON 数组 "[l,t,w,h]"、
+    逗号串 "0,0,800,600"、空格串 "0 0 800 600"。
+    旧实现只认 JSON，agent 按 CLI 习惯传逗号串时直接 JSONDecodeError。"""
+    s = str(area).strip()
+    if not s:
+        return None
+    if s.startswith("["):
+        return json.loads(s)
+    parts = [x.strip() for x in s.replace(" ", ",").split(",") if x.strip()]
+    if len(parts) != 4:
+        raise ValueError('area 需要 4 个整数（"[l,t,w,h]" 或 "l,t,w,h"）：%r'
+                         % area)
+    return [int(float(x)) for x in parts]
+
+
 def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
-          area=None, retention_days=30, preview=False):
+          area=None, retention_days=30, preview=True):
     """桌面截图：mode=full(全虚拟桌面)/screen(单屏,screen=序号)/win(前台窗口)
     /area(区域,area=[l,t,w,h])。返回 PNG 绝对路径；clip=true 只进剪贴板
     不落盘（**clip 与 preview 同传时 clip 优先，preview 被忽略**）。
     每次运行顺手清理超 retention_days 的旧图（keep=true 跳过）。
-    preview=true（v0.1.11 实验特性）：收据升级多内容块，附 1200px JPEG
-    缩图 ImageContent（audience:user；≤500KB 梯次降档；宿主渲染行为待
-    实测，设计文档 §7.10）。"""
+
+    preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块，附 1200px /
+    ≤200KB JPEG 缩图 ImageContent——模型不必再 read_image 多一跳。
+    preview=false 退回旧单字符串收据（省上下文/省一次缩图进程）。
+    收据另带 box_source（virtual/screen/dwm/rect/area）与 gdi_error
+    （主路失败原因，兜底成功时也在）。"""
     if isinstance(area, str):
-        area = json.loads(area) if area else None
+        area = _parse_area(area)
     r = capture.shot(mode=mode or "full", screen=screen, area=area)
     all_black = None
     if r["kind"] == "raw":
@@ -64,15 +110,19 @@ def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
         all_black = capture.is_all_black(r["bgra"], r["w"], r["h"])
     else:
         png = r["png"]   # PS 兜底路径是 PNG 字节，黑帧检测不拆解（如实 None）
-    if clip in (True, "true", "True", "1"):
+    if as_bool(clip):
         if not output.clip_png(png):
             raise RuntimeError("剪贴板写入失败")
         return json.dumps({"ok": True, "clipboard": True}, ensure_ascii=False)
     path = output.save(png, out=out)
-    n, mb = output.gc(retention_days=int(retention_days or 30), keep=keep in (True, "true", "True", "1"))
+    n, mb = output.gc(retention_days=as_int(retention_days, 30),
+                      keep=as_bool(keep))
     receipt = {"ok": True, "path": path, "all_black": all_black,
+               "box_source": r.get("box_source"),
                "gc": {"removed": n, "freed_mb": round(mb, 1)}}
-    if preview in (True, "true", "True", "1"):
+    if r.get("gdi_error"):
+        receipt["gdi_error"] = r["gdi_error"]   # Q09：降级原因不静默
+    if as_bool(preview):
         try:
             jpeg, info = output.preview_jpeg(png)
             receipt["preview"] = info
@@ -90,33 +140,37 @@ def _screens():
                       ensure_ascii=False)
 
 
-def _annotate(image, ops, out=None, preview=False):
+def _annotate(image, ops, out=None, preview=True):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     text(中文可标注，GDI+ 系统字体；v0.1.9 起可选 font=字体族名/bold=
     粗体开关，缺省微软雅黑+粗体；未安装字体名静默回退默认；font/bold
-    仅矢量路生效，像素降级路不认)/mosaic/blur/step(自动递增编号)/
+    仅矢量路生效，像素降级路不认；**v0.2.6 起 text 可带 w=布局宽，
+    由 GDI+ 按真实字体度量自动换行**)/mosaic/blur/step(自动递增编号)/
     number(显式编号 value)/spotlight(聚光灯 dim)/smarterase(智能擦除)。
-    矢量抗锯齿渲染（GDI+），失败自动降级纯像素画布。收据 backend=形状
-    渲染后端（gdi+=矢量成功/pixel=降级或纯像素，混合 ops 时 gdi+ 仍
-    成立）；pixel_ops=像素操作数量。像素 ops 恒在形状之后叠加（与 ops
-    数组顺序无关）。preview=true（v0.1.11 实验特性）：收据升级多内容
-    块，附 1200px JPEG 缩图 ImageContent（audience:user；≤500KB 梯次
-    降档；宿主渲染行为待实测，设计文档 §7.10）。返回标注后 PNG 绝对
-    路径；out 缺省写 <原名>_annotated.png——绝不覆盖原图（v0.1.5 P1
-    根修，与 CLI 对齐）。"""
+    矢量抗锯齿渲染（GDI+），失败自动降级纯像素画布——**降级原因写进
+    degrade_reason**（v0.2.6 Q08，设计内降级 vs 环境坏了可区分）。
+    收据 backend=形状渲染后端（gdi+=矢量成功/pixel=降级或纯像素，混合
+    ops 时 gdi+ 仍成立）；pixel_ops=像素操作数量；bounds_warn=实测超界
+    告警（v0.2.6 Q15，ps1 MeasureString 实测，非估算）。
+    像素 ops 恒在形状之后叠加（与 ops 数组顺序无关）。
+    preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块 + ≤200KB JPEG。
+    返回标注后 PNG 绝对路径；out 缺省写 <原名>_annotated.png——绝不覆盖
+    原图（v0.1.5 P1 根修）。"""
     with open(str(image), "rb") as fh:
         png = fh.read()
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
+    stats = {}
     out_bytes, backend, pixel_n = annotate_gdi.annotate_png_vector(
-        png, ops_list or [])
-    stem = str(image)
-    default_out = (stem.rsplit(".", 1)[0] + "_annotated.png"
-                   if "." in os.path.basename(stem)
-                   else stem + "_annotated.png")
-    path = output.save(out_bytes, out=out or default_out)
+        png, ops_list or [], stats=stats)
+    path = output.save(out_bytes, out=out or annotate.default_out(image))
     receipt = {"ok": True, "path": path, "backend": backend,
                "pixel_ops": pixel_n}
-    if preview in (True, "true", "True", "1"):
+    if stats.get("degrade_reason"):
+        receipt["degrade_reason"] = stats["degrade_reason"]
+        receipt["backend_fallback"] = True
+    if stats.get("bounds_warn"):
+        receipt["bounds_warn"] = stats["bounds_warn"]
+    if as_bool(preview):
         try:
             jpeg, info = output.preview_jpeg(out_bytes)
             receipt["preview"] = info
@@ -136,13 +190,14 @@ def _tool_named(name, fn):
     TOOLS[name] = entry
 
 
-def _fonts(filter=None):
+def _fonts(filter=None, refresh=False):
     """列出系统已装字体族名（v0.1.10）。数据源与渲染器同源
     （.NET InstalledFontCollection）——查出的名字保证 text op 的 font
     字段可解析（未装名会静默回退默认字体，先查后用）。filter=不区分
-    大小写子串过滤。收据 {ok, count, families:[...]}。本工具需宿主
-    重连后才会出现在工具表。"""
-    names = fonts.list_families(filter)
+    大小写子串过滤；refresh=true 强制重枚举（v0.2.6 Q11；缺省走 300s
+    缓存——常驻进程装了新字体最多等 5 分钟，或显式 refresh）。
+    收据 {ok, count, families:[...]}。本工具需宿主重连后才会出现在工具表。"""
+    names = fonts.list_families(filter, refresh=as_bool(refresh))
     return json.dumps({"ok": True, "count": len(names),
                        "families": names}, ensure_ascii=False)
 
@@ -190,22 +245,38 @@ def _cdp_tabs(port=None):
                        "tabs": cdp.tabs(int(port))}, ensure_ascii=False)
 
 
-def _cdp_shot(port=None, index=0, fullpage=True, out=None):
+def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
+              stitch=True):
     """CDP 浏览器标签页截图（v0.2.0）：Page.captureScreenshot，
     无头/有头通吃、与 AI 宿主无关（设计文档 v0.2.0 §4.2）。port 缺省
     =discover；index=第几个 page 标签；fullpage=captureBeyondViewport
-    （Chrome 90+，视口外也截）。Chrome 136+ 默认 profile 拒远程调试
+    （Chrome 90+，视口外也截）。**超长页**（>16384px）自动滚动拼接，
+    stitch=false 关闭。Chrome 136+ 默认 profile 拒远程调试
     （default_profile_denied）——用非默认 --user-data-dir 启动。返回
-    截图 PNG 路径；本工具需宿主重连后才会出现在工具表。收据含 dpr 与
-    **to_css**：截图像素 × to_css = 点击用的 CSS 坐标。"""
-    ws = _resolve_cdp(port, index)
-    png, info = cdp.shot(None, ws=ws, fullpage=fullpage not in (
-        False, "false", "False", "0"))
+    截图 PNG 路径；收据含 dpr、**to_css**（截图像素 × to_css = 点击用的
+    CSS 坐标）与 coord_space（viewport/document——全页截图是文档坐标，
+    点首屏以下要先减 scrollY，v0.2.6 Q06）。preview 缺省 true（Q16）。
+    本工具需宿主重连后才会出现在工具表。"""
+    ws_url = _resolve_ws(port, index)
+    png, info = cdp.shot(None, ws=ws_url,
+                         fullpage=as_bool(fullpage, True),
+                         stitch=as_bool(stitch, True))
     path = output.save(png, out=out)
     rec = {"ok": True, "path": path}
-    for k in ("w", "h", "vw", "vh", "dpr", "to_css", "hint", "fullpage"):
+    for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
+              "scroll_y", "hint", "fullpage", "fullpage_truncated",
+              "stitched", "shots", "stitch_error"):
         if k in info:
             rec[k] = info[k]
+    if as_bool(preview):
+        try:
+            jpeg, pinfo = output.preview_jpeg(png)
+            rec["preview"] = pinfo
+            return _content_with_image(json.dumps(rec, ensure_ascii=False),
+                                       jpeg)
+        except Exception as e:  # noqa: BLE001
+            rec["preview"] = {"error": "%s: %s"
+                              % (type(e).__name__, str(e)[:200])}
     return json.dumps(rec, ensure_ascii=False)
 
 
@@ -213,11 +284,13 @@ def _cdp_view(port=None, index=0, ws=None, timeout=15):
     """CDP 标签页视口信息（v0.2.5）：vw/vh = CSS 像素视口尺寸，
     dpr = devicePixelRatio，content_w/h = 整页内容尺寸。
     截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
     lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15))
     rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
            "content_w": lay["content_w"], "content_h": lay["content_h"],
            "dpr": dpr}
+    if lay.get("scroll_y") is not None:
+        rec["scroll_y"] = lay["scroll_y"]
     if lay["vw"] and lay["vh"] and dpr:
         rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
                        % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
@@ -229,11 +302,12 @@ def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
     """在 CDP 标签页里跑一段 JS 并取值（v0.2.5）。js 可写函数体（内部
     return）或表达式。用途：算坐标、读页面状态确认操作生效、拿 dpr。
     **只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点，
-    一发即杀实例）。收据 {ok, value, exception}——异常如实带出不静默。"""
-    ws_url = ws or _resolve_cdp(port, index)
-    res = cdp.evaluate(ws_url, js, timeout=int(timeout or 30),
-                       await_promise=await_promise in (
-                           True, "true", "True", "1"))
+    一发即杀实例）。收据 {ok, value, value_type, exception}——异常如实
+    带出不静默；value_type 区分 null / undefined / 不可序列化对象
+    （v0.2.6 Q14：三者旧收据同形 None）。"""
+    ws_url = _resolve_ws(port, index, ws)
+    res = cdp.evaluate(ws_url, js, timeout=as_int(timeout, 30),
+                       await_promise=as_bool(await_promise))
     exc = res.get("exceptionDetails")
     rec = {"ok": exc is None}
     if exc:
@@ -241,50 +315,39 @@ def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
                             or exc.get("text") or str(exc)[:200])
     else:
         res_obj = res.get("result") or {}
+        vtype = res_obj.get("type")
         rec["value"] = res_obj.get("value")
-        if res_obj.get("type") == "undefined":
+        rec["value_type"] = vtype
+        if vtype == "undefined":
             rec["note"] = "undefined（多半传了表达式却没写 return）"
+        elif (vtype == "object" and res_obj.get("value") is None
+              and res_obj.get("subtype") not in ("null", "array")):
+            # null 是合法结果；数组在 returnByValue 下 value 有值——
+            # 只有"对象但没值"才是不可序列化（v0.2.6 审计修正）
+            rec["note"] = ("对象未按值返回（不可序列化）——请 return 具体字段，"
+                           "如 return document.title")
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _describe_ports(ports):
-    """多端口时把每个实例的首个页签列出来，让人一眼认出是谁的浏览器
-    （v0.2.5：discover 直接取 [0] 会把操作打到别人的实例上——实测
-    曾把 ALrec 的 9225 当成目标）。列不出来就只给端口，不编造。"""
-    lines = []
-    for p in ports:
-        try:
-            ts = cdp.tabs(int(p))
-            head = ts[0] if ts else None
-            if head:
-                lines.append("  --port %s  %s | %s"
-                             % (p, (head.get("title") or "")[:40],
-                                (head.get("url") or "")[:60]))
-                continue
-        except Exception:  # noqa: BLE001 —— 标注失败不影响报错本身
-            pass
-        lines.append("  --port %s  （无法读取页签）" % p)
-    return lines
+_LAST_TARGET = {}   # 最近一次解析出的目标身份（收据盖章用，stdio 单线程）
 
 
-def _resolve_cdp(port, index=0, allow_multi=False):
-    """cdp 输入工具公共解析：port 缺省 discover -> page ws。
+def _resolve_ws(port, index=0, ws=None, allow_multi=False):
+    """cdp 工具公共解析：-> page ws，并记录目标身份（v0.2.6 Q04）。
 
-    **安全边界（v0.2.5）**：discover 命中多个调试端口时，输入类动作
-    **必须显式指定 --port**——静默取第一个会把鼠标事件打到完全不相干的
-    浏览器实例上（可能带对方的登录态、可能正在被对方手动使用）。
-    只有只读的 cdp-tabs 允许 allow_multi（它本就能一次列多实例）。"""
-    if port in (None, "", 0):
-        disc = cdp.discover()
-        if not disc["ports"]:
-            raise RuntimeError(disc["hint"])
-        if len(disc["ports"]) > 1 and not allow_multi:
-            raise RuntimeError(
-                "发现 %d 个调试浏览器实例，不安全猜：请用 --port 指定目标\n%s"
-                % (len(disc["ports"]), "\n".join(_describe_ports(
-                    disc["ports"]))))
-        port = disc["ports"][0]
-    return cdp.ws_for(int(port), index=int(index or 0))
+    安全边界：discover 多实例时输入类动作**必须显式 --port**；单实例
+    也不再"静默命中"——target（端口/进程名/页签 title+url/扫描警告）
+    由 _serve 盖进收据，agent 能一眼看出这是不是自己的浏览器。"""
+    _LAST_TARGET.clear()   # 先清：解析失败时不会把上一次的目标带进来
+    if ws:
+        _LAST_TARGET["ws"] = ws
+        return ws
+    p, info = cdp.pick_port(port, allow_multi=allow_multi)
+    info = dict(info)
+    info.update({k: v for k, v in cdp.target_info(p, index).items()
+                 if k != "port"})
+    _LAST_TARGET.update(info)   # 就地更新（与 _serve 的 clear 同一对象）
+    return cdp.ws_for(p, index=int(index or 0))
 
 
 def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
@@ -293,7 +356,7 @@ def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
     Alt1/Ctrl2/Meta4/Shift8）；text=覆盖产生的文本（如中文）。可见
     字符 rawKeyDown+char 双发，控制键 keyDown+keyUp。返回
     {ok, dispatched}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
     mods = modifiers if isinstance(modifiers, int) else (modifiers or 0)
     seq = cdp.key_events(key, mods, text=text)
     n, unresolved = cdp.dispatch(ws_url, seq)
@@ -306,7 +369,7 @@ def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
 def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
     """CDP 鼠标滚轮（v0.2.0）：dy 正=向下滚动，dx 横向；x/y=事件坐标
     （CSS 像素）。返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
     ev = {"type": "mouseWheel", "x": int(x), "y": int(y),
           "deltaX": int(dx), "deltaY": int(dy), "modifiers": 0}
     n, _ = cdp.dispatch(ws_url, [ev])
@@ -314,22 +377,26 @@ def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
 
 
 def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
-               index=0, ws=None, timing=True, verify=""):
+               index=0, ws=None, timing=True, verify="",
+               from_x=None, from_y=None):
     """CDP 鼠标单击（v0.2.0/0.2.4）：x/y=CSS 像素；button=left/right/
     middle；human=True（缺省）先沿人类化贝塞尔轨迹移动到位（带微抖动、
     有节奏地靠近），timing=false 或 --teleport 可退回瞬移（批处理时省掉
     每次约 200ms 的靠近耗时）。
+    from_x/from_y=接近轨迹起点（v0.2.6 Q12；缺省在目标周围随机方位，
+    不再恒从屏幕左上角出发——那是稳定指纹）。
     verify=一段 JS（可选）：点完立刻求值，结果进收据 verify 字段——
     **dispatched 只说明事件发出去了，不说明生效**（v0.2.5 诚实化）。
     返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
+    start = (from_x, from_y) if (from_x is not None and
+                                 from_y is not None) else None
     seq = cdp.click_events(int(x), int(y), button=button,
-                           human=human not in (False, "false", "False",
-                                               "0"),
-                           seed=int(seed) if seed not in (None, "") else None)
+                           human=as_bool(human, True),
+                           seed=int(seed) if seed not in (None, "") else None,
+                           start=start)
     t0 = time.time()
-    n, _ = cdp.dispatch(ws_url, seq,
-                        realtime=timing not in (False, "false", "False", "0"))
+    n, _ = cdp.dispatch(ws_url, seq, realtime=as_bool(timing, True))
     rec = {"ok": True, "dispatched": n,
            "seconds": round(time.time() - t0, 2)}
     if verify:
@@ -363,27 +430,26 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
     verify=一段 JS（可选）：拖完立刻求值，结果进收据——用来确认真的拖到了。
 
     返回 {ok, dispatched, seconds, pace, constrained}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
     seq = cdp.drag_events(
         x1, y1, x2, y2,
             steps=int(steps) if steps not in (None, "", 0) else 0,
             button=button,
-            human=human not in (False, "false", "False", "0"),
+            human=as_bool(human, True),
             seed=int(seed) if seed not in (None, "") else None,
-        constrained=constrained not in (False, "false", "False", "0"),
+        constrained=as_bool(constrained, True),
         max_perp=float(max_perp or 2.5),
         total_ms=(None if total_ms in (None, "") else float(total_ms)),
         pace=pace or "normal")
     stats = {}
     t0 = time.time()
-    n, _ = cdp.dispatch(ws_url, seq,
-                        realtime=timing not in (False, "false", "False", "0"),
+    n, _ = cdp.dispatch(ws_url, seq, realtime=as_bool(timing, True),
                         stats=stats)
     rec = {"ok": True, "dispatched": n,
            "seconds": round(time.time() - t0, 2),
            "pace": str(pace or "normal"),
-           "timing": timing not in (False, "false", "False", "0"),
-           "constrained": constrained not in (False, "false", "False", "0"),
+           "timing": as_bool(timing, True),
+           "constrained": as_bool(constrained, True),
            "max_perp": float(max_perp or 2.5)}
     if stats.get("planned_ms"):
         rec["planned_ms"] = stats["planned_ms"]
@@ -403,16 +469,19 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
 
 
 def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
-                  port=None, index=0, ws=None):
+                  port=None, index=0, ws=None, from_x=None, from_y=None):
     """CDP 双击/多击（v0.2.3/0.2.4）：clickCount 递增序列，浏览器据此
     合成 dblclick 事件；human=True（缺省）先人类化轨迹到位。x/y=CSS
-    像素。返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    像素；from_x/from_y 可选起点（v0.2.6 Q12）。返回 {ok, dispatched}。
+    需宿主重连出现。"""
+    ws_url = _resolve_ws(port, index, ws)
+    start = (from_x, from_y) if (from_x is not None and
+                                 from_y is not None) else None
     seq = cdp.dblclick_events(x, y, button=button, count=int(count or 2),
-                              human=human not in (False, "false", "False",
-                                                  "0"),
+                              human=as_bool(human, True),
                               seed=int(seed) if seed not in (None,
-                                                             "") else None)
+                                                             "") else None,
+                              start=start)
     n, _ = cdp.dispatch(ws_url, seq)
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
@@ -425,7 +494,7 @@ def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,
     键盘（v0.2.0 §4.2.2）。verify=一段 JS（可选）：输完立刻求值
     （如 `return document.activeElement.value`），结果进收据——用来
     确认字真的进去了。返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
+    ws_url = _resolve_ws(port, index, ws)
     seq = ([{"type": "mouseMoved", "x": int(x), "y": int(y),
              "modifiers": 0},
             {"type": "mousePressed", "x": int(x), "y": int(y),
@@ -449,11 +518,76 @@ def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,
     return json.dumps(rec, ensure_ascii=False)
 
 
+def _hash(image, algo="dhash"):
+    """图像指纹（v0.2.7）：sha256（精确）+ dhash/ahash（感知，64 bit 十六
+    进制）。用途：截图去重、页面变化监控、UI 回归。algo 指定时收据额外给
+    `value`。收据 {ok, sha256, dhash, ahash, w, h, value?}。"""
+    with open(str(image), "rb") as fh:
+        png = fh.read()
+    rec = vision.digest(png)
+    if algo:
+        rec["value"] = rec.get(str(algo))
+    rec["ok"] = True
+    return json.dumps(rec, ensure_ascii=False)
+
+
+def _diff(a, b, threshold=0.12, out=None):
+    """两张 PNG 差异（v0.2.7）：YIQ 颜色距离 + threshold（0~1），返回
+    changed_px/ratio/bbox/size_mismatch；out 给了就落盘差异图（未变区域
+    压暗、变化像素涂红）。**未做 pixelmatch 式抗锯齿检测**——字体边缘
+    可能有少量假差异，收据 note 会写明。"""
+    with open(str(a), "rb") as fh:
+        pa = fh.read()
+    with open(str(b), "rb") as fh:
+        pb = fh.read()
+    rec = vision.diff(pa, pb, threshold=float(threshold or 0.12),
+                      make_image=bool(out))
+    img = rec.pop("image", None)
+    if out and img:
+        rec["out"] = output.save(img, out=out)
+    rec["ok"] = True
+    return json.dumps(rec, ensure_ascii=False)
+
+
+def _element(selector, port=None, index=0, ws=None, scroll=False):
+    """元素在视口里的 CSS 矩形 + 可见性（v0.2.7）：x/y/w/h/cx/cy、
+    visible（checkVisibility）/in_viewport/visible_ratio/occluded
+    （elementFromPoint 中心）/pointer_events/dpr/scroll。**坐标是主页面
+    视口 CSS 像素，可直接喂 cdp_click**；截图坐标要先乘 to_css。"""
+    ws_url = _resolve_ws(port, index, ws)
+    rec = dom.element_rect(ws_url, selector, scroll=as_bool(scroll))
+    rec["ok"] = True
+    return json.dumps(rec, ensure_ascii=False)
+
+
+def _frames(port=None, index=0, ws=None):
+    """frame 树（v0.2.7）：id/url/name/parent_id/depth，尽力附 iframe
+    自身矩形（跨站 OOPIF 拿不到就留空）。收据 {ok, frames:[...]}。"""
+    ws_url = _resolve_ws(port, index, ws)
+    return json.dumps({"ok": True, "frames": dom.frames(ws_url)},
+                      ensure_ascii=False)
+
+
+def _frame_element(iframe, selector, port=None, index=0, ws=None):
+    """iframe 内元素 → 主页面视口 CSS 矩形（v0.2.7）。iframe=选择器字符串
+    （单层）或 JSON 数组（同源嵌套）；同源走 JS 递归，同进程跨域走
+    createIsolatedWorld，跨站 OOPIF 如实报 oopif_unsupported。"""
+    ws_url = _resolve_ws(port, index, ws)
+    rec = dom.frame_element_rect(ws_url, iframe, selector)
+    rec["ok"] = True
+    return json.dumps(rec, ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
 _tool_named("ashot_fonts", _fonts)
 _tool_named("ashot_show", _show)
+_tool_named("ashot_hash", _hash)
+_tool_named("ashot_diff", _diff)
+_tool_named("ashot_element", _element)
+_tool_named("ashot_frames", _frames)
+_tool_named("ashot_frame_element", _frame_element)
 _tool_named("ashot_cdp_tabs", _cdp_tabs)
 _tool_named("ashot_cdp_shot", _cdp_shot)
 _tool_named("ashot_cdp_view", _cdp_view)
@@ -466,6 +600,32 @@ _tool_named("ashot_cdp_dblclick", _cdp_dblclick)
 _tool_named("ashot_cdp_type", _cdp_type)
 
 _stop = False
+
+
+def _stamp(out):
+    """收据盖章（单一出口，v0.2.6）：ver=进程内版本（Q18——文件版本号
+    对了但进程还是旧的，这一行就能识破）；target=本次 cdp 目标身份
+    （Q04——单实例也不许静默，收据里必须有"是谁的浏览器"）。
+    非 JSON 文本原样返回。"""
+    def patch(text):
+        try:
+            rec = json.loads(text)
+        except (ValueError, TypeError):
+            return text
+        if not isinstance(rec, dict):
+            return text
+        rec.setdefault("ver", __version__)
+        if _LAST_TARGET and "target" not in rec:
+            rec["target"] = dict(_LAST_TARGET)
+        return json.dumps(rec, ensure_ascii=False)
+
+    if isinstance(out, list):
+        for blk in out:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                blk["text"] = patch(blk.get("text") or "")
+                break
+        return out
+    return patch(out)
 
 
 def _serve():
@@ -519,8 +679,10 @@ def _serve():
                                  "未知工具 %s（有：%s）" % (name, ", ".join(TOOLS))}]}}
             else:
                 args = (req.get("params") or {}).get("arguments") or {}
+                _LAST_TARGET.clear()   # 每次调用清空：不把上个目标带进本次收据
                 try:
                     out = entry["_fn"](**args)
+                    out = _stamp(out)
                     # v0.1.11：handler 返回 list = 预成形多内容块
                     # （文本收据+ImageContent）；str = 旧单文本（兼容）
                     content = (out if isinstance(out, list)
@@ -528,11 +690,13 @@ def _serve():
                     resp = {"jsonrpc": "2.0", "id": rid, "result": {
                         "content": content}}
                 except Exception as e:  # noqa: BLE001 —— 业务失败走 isError
+                    # 错误收据同样盖章（v0.2.6 审计：只盖成功路径等于在
+                    # 最需要识破旧进程的时候没有 ver）
+                    err = {"ok": False, "error": "%s: %s"
+                           % (type(e).__name__, str(e)[:200])}
                     resp = {"jsonrpc": "2.0", "id": rid, "result": {
                         "isError": True, "content": [{"type": "text", "text":
-                        json.dumps({"ok": False, "error": "%s: %s"
-                                    % (type(e).__name__, str(e)[:200])},
-                                   ensure_ascii=False)}]}}
+                        _stamp(json.dumps(err, ensure_ascii=False))}]}}
         elif rid is not None:
             resp = {"jsonrpc": "2.0", "id": rid, "error": {
                 "code": -32601, "message": "未知方法 %s" % method}}

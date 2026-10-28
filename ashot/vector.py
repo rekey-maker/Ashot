@@ -13,6 +13,8 @@ _gdi_render.ps1（System.Drawing 抗锯齿），编排归 annotate_gdi。
 """
 import math
 
+from ._coerce import as_bool
+
 DEFAULT_COLOR = "#FF3B30"
 DEFAULT_WIDTH = 3
 DEFAULT_FONT = "Microsoft YaHei UI"   # v0.1.9 前写死于渲染脚本，现提为缺省值
@@ -125,21 +127,22 @@ def _fat_arrow_poly(x1, y1, x2, y2, width):
     return poly
 
 
-def _as_bool(v):
-    """bold 字段保真：字符串形态（"false"/"0"/"no"/"off"/""）按假值
-    处理——bool("false") 是 truthy，MCP 面手写 JSON 的常见输入
-    （审计 P3-1）。"""
-    if isinstance(v, str):
-        return v.strip().lower() not in ("false", "0", "no", "off", "")
-    return bool(v)
+_as_bool = as_bool   # v0.2.6：实现搬到 _coerce 单源（审计 Q13）。
+# 注意真值表：假的词表（"false"/"0"/"no"/"off"/""）两版一致；未知串要按
+# 真值处理（旧行为）就显式传 default=True——bold 的调用点已这么做。
 
 
 def compile_ops(ops):
     """JSON ops -> {"shapes": [...], "pixel_ops": [...]}。
-    未知 kind 如实抛错（绝不静默跳过，与像素版契约一致）。"""
+    未知 kind 如实抛错（绝不静默跳过，与像素版契约一致）。
+
+    每个 shape 带 `i` = 来源 op 下标（v0.2.6）：GDI+ 渲染后回传的实测
+    bbox 靠它对齐到具体 op，出界告警才能说"op[2] 超出右边界 87px"。
+    text 可带 `w`（布局矩形宽，像素）——GDI+ 按真实字体度量自动换行
+    （v0.2.6 Q15，业界最优解：不自己估字宽）。"""
     shapes, pixel_ops = [], []
     step_n = 0
-    for op in ops:
+    for oi, op in enumerate(ops):
         kind = op.get("kind")
         color = _hex(op.get("color"))
         width = float(op.get("width", DEFAULT_WIDTH))
@@ -156,25 +159,31 @@ def compile_ops(ops):
             else:
                 x1, y1, x2, y2 = _nums(op, ("x1", "y1", "x2", "y2"))
                 pts = [(x1, y1), (x2, y2)]
-            shapes.append(_stroke(pts, color, width))
+            sh = _stroke(pts, color, width)
+            sh["i"] = oi
+            shapes.append(sh)
         elif kind == "arrow":
             x1, y1, x2, y2 = _nums(op, ("x1", "y1", "x2", "y2"))
             if str(op.get("style", "fat")) == "line":
-                shapes.append(_stroke([(x1, y1), (x2, y2)], color, width))
+                sh = _stroke([(x1, y1), (x2, y2)], color, width)
+                sh["i"] = oi
+                shapes.append(sh)
                 ang = math.atan2(y2 - y1, x2 - x1)
                 ln = max(12.0, width * 4)
                 for da in (2.6, -2.6):
-                    shapes.append(_stroke(
+                    sh = _stroke(
                         [(x2, y2),
                          (x2 + ln * math.cos(ang + da),
-                          y2 + ln * math.sin(ang + da))], color, width))
+                          y2 + ln * math.sin(ang + da))], color, width)
+                    sh["i"] = oi
+                    shapes.append(sh)
             else:
                 poly = _fat_arrow_poly(x1, y1, x2, y2, width)
                 if poly:
                     shapes.append({"t": "fill",
                                    "pts": [[round(px, 2), round(py, 2)]
                                            for px, py in poly],
-                                   "color": color})
+                                   "color": color, "i": oi})
         elif kind in ("step", "number"):
             sz = float(op.get("size", 16))
             cx, cy = float(op.get("x", 0)) + sz, float(op.get("y", 0)) + sz
@@ -185,7 +194,8 @@ def compile_ops(ops):
                 label = str(op.get("value", op.get("n", "1")))
             shapes.append({"t": "dot", "cx": cx, "cy": cy, "r": sz,
                            "color": color, "label": label,
-                           "font": DEFAULT_FONT})   # v0.1.10 单源化：dot 字体
+                           "font": DEFAULT_FONT,   # v0.1.10 单源化：dot 字体
+                           "i": oi})
             # 不再于 ps1 硬编码（审计 P3-2 漂移隐患）
         elif kind == "text":
             shapes.append({"t": "text",
@@ -195,7 +205,12 @@ def compile_ops(ops):
                            "size": float(op.get("size", 16)),
                            "color": color,
                            "font": str(op.get("font", DEFAULT_FONT)),
-                           "bold": _as_bool(op.get("bold", True))})
+                           "bold": _as_bool(op.get("bold", True), default=True),
+                           # v0.2.6：w>0 = 布局矩形宽（GDI+ 自动换行）；
+                           # h 缺省 0 → 渲染脚本用足够大的高（不纵向截断）
+                           "w": float(op.get("w") or 0),
+                           "h": float(op.get("h") or 0),
+                           "i": oi})
         else:
             raise ValueError("未知标注 kind：%r" % kind)
     return {"shapes": shapes, "pixel_ops": pixel_ops}

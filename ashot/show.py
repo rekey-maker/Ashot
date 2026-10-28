@@ -38,7 +38,10 @@ def build_html(image_path, title, out_dir, caption=None, width=1200):
                          % len(safe))
     with open(str(image_path), "rb") as fh:
         png = fh.read()
-    jpeg, info = output.preview_jpeg(png, width=int(width))
+    # v0.2.6：show 是**给人看的**展示件，预算显式回到 500KB——
+    # MCP preview（模型自检）才用 200KB 的缺省，别把两者混成一个口径
+    jpeg, info = output.preview_jpeg(png, width=int(width),
+                                     max_bytes=500 * 1024)
     cap = html.escape(str(caption) if caption is not None
                       else os.path.basename(str(image_path)))
     frag = _TEMPLATE % (safe, base64.b64encode(jpeg).decode(), cap, cap)

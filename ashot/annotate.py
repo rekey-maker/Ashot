@@ -31,11 +31,24 @@ B 交互形态（tkinter 全屏遮罩画布）v0.2 预留：接口 annotate_inte
 """
 import json
 import math
+import os
 import struct
 import zlib
 
 DEFAULT_COLOR = (0xFF, 0x3B, 0x30)
 DEFAULT_WIDTH = 3
+
+
+def default_out(image):
+    """缺省输出路径：<原名>_annotated.png（v0.2.6 Q07 单源）。
+
+    先看 **basename** 有没有点——旧 CLI 直接对全路径 rsplit(".")，
+    父目录带点（…/my.dir/shot）时会把路径截到上一级、静默写错地方。
+    与 MCP 面同源，避免两脸行为分叉。"""
+    s = str(image)
+    if "." in os.path.basename(s):
+        return s.rsplit(".", 1)[0] + "_annotated.png"
+    return s + "_annotated.png"
 
 
 # ---------- 像素画布（RGBA，无 PIL） ----------
@@ -197,17 +210,27 @@ class Canvas:
                 if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
                     self._px(xx, yy, color)
 
-    def text(self, x, y, s, color=DEFAULT_COLOR, size=16):
+    def text(self, x, y, s, color=DEFAULT_COLOR, size=16, max_width=None):
         """首版 ASCII 8x16 点阵；非 ASCII 字符画占位框（诚实降级，
-        中文文本标注留 B 交互窗形态——点阵字体不破零依赖红线）。"""
+        中文文本标注留 B 交互窗形态——点阵字体不破零依赖红线）。
+
+        v0.2.6（Q15）：max_width（像素）给了就按点阵字宽贪心折行，
+        `\\n` 显式换行——与矢量路（GDI+ RectangleF）语义对齐；
+        不给=旧行为（单行，出界由上层 bounds_warn 告警）。"""
         from . import font8x16
-        cx = x
         sc = max(1, size // 16)   # v0.1.2 审查 P2-1：偏移与复制同一缩放——
         # 旧实现偏移用裸 size//16（<16 时为 0），字形所有点画到同一点
+        cx, cy = x, y
+        line_h = 16 * sc + 4
         for ch in s:
+            if ch == "\n":
+                cx, cy = x, cy + line_h
+                continue
+            if max_width and cx > x and (cx + 8 * sc + 2) - x > max_width:
+                cx, cy = x, cy + line_h   # 折行（至少画一个字符，防死循环）
             glyph = font8x16.glyph(ch)
             if glyph is None:
-                self.rect(cx, y, size, size, color, 1)
+                self.rect(cx, cy, size, size, color, 1)
                 cx += size + 2
                 continue
             for row, bits in enumerate(glyph):
@@ -216,7 +239,7 @@ class Canvas:
                         for oy in range(sc):
                             for ox in range(sc):
                                 self._px(cx + col * sc + ox,
-                                         y + row * sc + oy, color)
+                                         cy + row * sc + oy, color)
             cx += 8 * sc + 2
 
     def mosaic(self, x, y, w, h, block=12):
@@ -327,11 +350,14 @@ class Canvas:
 
 
 def _decode_png(png):
-    """有限 PNG 解码：仅支持本工具产出的 8-bit RGBA / capture 兜底 PNG 同族。
-    其他形态如实报错（不追求通用解码器）。"""
+    """PNG 解码（v0.2.6 Q21 扩展）：8-bit、非隔行，颜色类型
+    0(灰度)/2(RGB)/3(调色板)/4(灰度+α)/6(RGBA)。16-bit 与隔行如实
+    拒绝并给出可操作提示——「降级路只吃 RGBA」曾让普通 RGB 导出图
+    在降级时直接 ValueError（不是降级，是失败）。"""
     if png[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("不是 PNG")
-    pos, idat, w, h, depth, ctype = 8, b"", 0, 0, 0, 0
+    pos, idat, plte, trns = 8, b"", b"", b""
+    w = h = depth = ctype = 0
     while pos < len(png):
         (ln,) = struct.unpack(">I", png[pos:pos + 4])
         tag = png[pos + 4:pos + 8]
@@ -342,45 +368,88 @@ def _decode_png(png):
                 # v0.1.5 P2：interlace 不校验会按逐行扫描线硬解 Adam7
                 # 数据 → 静默花图，违背「其他形态如实报错」契约
                 raise ValueError("不支持隔行（interlaced）PNG：如实拒绝")
+        elif tag == b"PLTE":
+            plte = data
+        elif tag == b"tRNS":
+            trns = data
         elif tag == b"IDAT":
             idat += data
         elif tag == b"IEND":
             break
         pos += 12 + ln
-    if depth != 8 or ctype != 6:
-        raise ValueError("仅支持 8-bit RGBA PNG（got depth=%s ctype=%s）"
-                         % (depth, ctype))
+    if depth != 8:
+        raise ValueError("仅支持 8-bit PNG（got depth=%s）——16-bit/低位深请先转 8-bit"
+                         % depth)
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(ctype)
+    if ch is None:
+        raise ValueError("不支持的 PNG 颜色类型 %s" % ctype)
+    if ctype == 3 and not plte:
+        raise ValueError("调色板 PNG 缺 PLTE，文件已损坏")
     raw = zlib.decompress(idat)
-    stride = w * 4
-    px = bytearray(w * h * 4)
+    bpp = ch
+    stride = w * bpp
+    rows = []
     prev = bytearray(stride)
     for y in range(h):
         off = y * (stride + 1)
         ft = raw[off]
         row = bytearray(raw[off + 1:off + 1 + stride])
         if ft == 1:    # Sub
-            for i in range(4, stride):
-                row[i] = (row[i] + row[i - 4]) & 0xFF
+            for i in range(bpp, stride):
+                row[i] = (row[i] + row[i - bpp]) & 0xFF
         elif ft == 2:  # Up
             for i in range(stride):
                 row[i] = (row[i] + prev[i]) & 0xFF
         elif ft == 3:  # Average
             for i in range(stride):
-                left = row[i - 4] if i >= 4 else 0
+                left = row[i - bpp] if i >= bpp else 0
                 row[i] = (row[i] + (left + prev[i]) // 2) & 0xFF
         elif ft == 4:  # Paeth
             for i in range(stride):
-                left = row[i - 4] if i >= 4 else 0
-                ul = prev[i - 4] if i >= 4 else 0
+                left = row[i - bpp] if i >= bpp else 0
+                ul = prev[i - bpp] if i >= bpp else 0
                 up = prev[i]
                 pp = left + up - ul
                 pa, pb, pc = abs(pp - left), abs(pp - up), abs(pp - ul)
                 pr = left if (pa <= pb and pa <= pc) else (
                     up if pb <= pc else ul)
                 row[i] = (row[i] + pr) & 0xFF
-        px[y * stride:(y + 1) * stride] = row
+        elif ft != 0:
+            raise ValueError("未知 PNG 行过滤器 %s" % ft)
+        rows.append(row)
         prev = row
+    joined = b"".join(bytes(r) for r in rows)
+    px = bytearray(w * h * 4)
+    if ctype == 6:
+        px[:] = joined
+    elif ctype == 2:
+        px[0::4] = joined[0::3]
+        px[1::4] = joined[1::3]
+        px[2::4] = joined[2::3]
+        px[3::4] = b"\xff" * (w * h)
+    elif ctype == 0:
+        px[0::4] = joined
+        px[1::4] = joined
+        px[2::4] = joined
+        px[3::4] = b"\xff" * (w * h)
+    elif ctype == 4:
+        px[0::4] = joined[0::2]
+        px[1::4] = joined[0::2]
+        px[2::4] = joined[0::2]
+        px[3::4] = joined[1::2]
+    else:   # 3 = 调色板
+        n = len(plte) // 3
+        for i, idx in enumerate(joined):
+            if idx >= n:
+                raise ValueError("调色板索引越界（%d >= %d）" % (idx, n))
+            o = i * 4
+            p = idx * 3
+            px[o] = plte[p]
+            px[o + 1] = plte[p + 1]
+            px[o + 2] = plte[p + 2]
+            px[o + 3] = trns[idx] if idx < len(trns) else 255
     return w, h, px
+
 
 
 # ---------- C 形态入口：JSON ops 批量标注 ----------
@@ -419,7 +488,8 @@ def annotate_png(png_bytes, ops):
                 cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
                                  sz, color)
             cv.text(int(op.get("x", 0)) + ox, int(op.get("y", 0)) + oy,
-                    body, color_body, sz)
+                    body, color_body, sz,
+                    max_width=int(op.get("w") or 0) or None)
             continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")

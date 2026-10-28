@@ -28,6 +28,28 @@ else:   # v0.2.0 导入守卫（审计 P1-1）：非 Windows 上本模块仅提�
     U32 = G32 = None
 
 
+class _RECT(ctypes.Structure):
+    _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+
+_DWM = None
+if sys.platform == "win32":
+    # v0.2.6（审计）：窗口句柄是 64 位指针——不声明 argtypes 时 ctypes 按
+    # c_int 传参，HWND ≥ 2^31 会被截断（本机实测的 hwnd 都小，属潜伏雷）。
+    # 原型统一在导入期定死，_win_box 不再给函数对象挂 restype。
+    U32.GetForegroundWindow.restype = ctypes.c_void_p
+    U32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
+    U32.GetWindowRect.restype = ctypes.c_int
+    try:
+        _DWM = ctypes.windll.dwmapi
+        _DWM.DwmGetWindowAttribute.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+        _DWM.DwmGetWindowAttribute.restype = ctypes.c_long
+    except Exception:  # noqa: BLE001 —— 极老系统无 dwmapi：回退 GetWindowRect
+        _DWM = None
+
+
 def _dpi_aware():
     """进程级 DPI 感知（必须在首次 GetDC 前）：否则 125%/150% 缩放的
     机器上 GetSystemMetrics 返回缩放后尺寸、BitBlt 拉伸糊图。幂等。"""
@@ -171,14 +193,35 @@ def _screen_box(index):
 
 
 def _win_box():
+    """前台窗口可见边界 -> ((l, t, w, h), 来源)。
+
+    v0.2.6（Q17）：优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`
+    ——GetWindowRect 在 Win10/11 返回的是**含不可见 resize 边与阴影留白**
+    的逻辑矩形（本机实测每侧多 11px），做配图时得自己裁；DWM 帧界才是
+    肉眼看到的窗口。失败/无 DWM 回退 GetWindowRect 并如实标注来源。
+
+    另修：hwnd=0（锁屏/服务态/桌面切换中）时 GetWindowRect(0) 行为未定义，
+    旧实现会返回垃圾矩形——现在抛可读错误。"""
     _dpi_aware()
     hwnd = U32.GetForegroundWindow()
-    class RECT(ctypes.Structure):
-        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
-                    ("r", ctypes.c_long), ("b", ctypes.c_long)]
-    rc = RECT()
-    U32.GetWindowRect(hwnd, ctypes.byref(rc))
-    return (rc.l, rc.t, rc.r - rc.l, rc.b - rc.t)
+    if not hwnd:
+        raise RuntimeError("当前没有前台窗口（锁屏/服务态/桌面切换中）")
+
+    # DWM 帧界（DWMWA_EXTENDED_FRAME_BOUNDS=9）：恒回物理像素；
+    # 本进程已 SetProcessDPIAware，与 GetWindowRect 同一坐标空间
+    try:
+        if _DWM is not None:
+            fr = _RECT()
+            hr = _DWM.DwmGetWindowAttribute(
+                hwnd, 9, ctypes.byref(fr), ctypes.sizeof(fr))
+            if hr == 0 and fr.r > fr.l and fr.b > fr.t:
+                return (fr.l, fr.t, fr.r - fr.l, fr.b - fr.t), "dwm"
+    except Exception:  # noqa: BLE001 —— 老系统/无 DWM：回退矩形
+        pass
+    rc = _RECT()
+    if not U32.GetWindowRect(hwnd, ctypes.byref(rc)):
+        raise RuntimeError("GetWindowRect 失败（hwnd=%s）" % hwnd)
+    return (rc.l, rc.t, rc.r - rc.l, rc.b - rc.t), "rect"
 
 
 def shot(mode="full", screen=None, area=None):
@@ -187,8 +230,12 @@ def shot(mode="full", screen=None, area=None):
     mode: full=全虚拟桌面 | screen=单屏（screen=序号） |
           win=前台窗口 | area=区域（area=(l, t, w, h)）
     返回 dict：
-      主路成功 -> {"kind": "raw", "w", "h", "bgra"}（交 output 编码 PNG）
-      兜底成功 -> {"kind": "png", "png"}（已是 PNG 字节）
+      主路成功 -> {"kind": "raw", "w", "h", "bgra", "box_source"}
+      兜底成功 -> {"kind": "png", "png", "gdi_error", "box_source"}
+      **box_source**：区域来源（virtual/screen/dwm/rect/area）——win 模式
+      下 dwm=可见帧界、rect=回退（含阴影留白），收据如实标注。
+      **gdi_error**：主路失败原因（v0.2.6 Q09）——旧实现裸 except 把
+      GDI 原始错误丢掉，v0.1.5 挂错 DLL 那类病只能靠猜。
     """
     if sys.platform != "win32":
         # v0.2.0：桌面捕获路 Windows 专属——非 Win 平台如实报（Mac
@@ -196,12 +243,15 @@ def shot(mode="full", screen=None, area=None):
         raise RuntimeError(
             "桌面截图暂不支持平台 %r（Mac 捕获路规划中，见设计文档 v0.2.0 批2）"
             % sys.platform)
+    box_source = "area"
     if mode == "full":
         box = _virtual_box()
+        box_source = "virtual"
     elif mode == "screen":
         box = _screen_box(int(screen or 0))
+        box_source = "screen"
     elif mode == "win":
-        box = _win_box()
+        box, box_source = _win_box()
     elif mode == "area":
         if not area or len(area) != 4:
             raise ValueError("area 需要 (left, top, width, height)")
@@ -212,10 +262,18 @@ def shot(mode="full", screen=None, area=None):
         raise ValueError("截图区域宽高必须为正：%r" % (box,))
     try:
         w, h, bgra = _shot_gdi(box)
-        return {"kind": "raw", "w": w, "h": h, "bgra": bgra}
-    except Exception:  # noqa: BLE001 —— 主路失败自动降级 PowerShell 兜底
-        kind, payload = _shot_ps(box)
-        return {"kind": kind, "png": payload}
+        return {"kind": "raw", "w": w, "h": h, "bgra": bgra,
+                "box_source": box_source}
+    except Exception as e:  # noqa: BLE001 —— 主路失败降级 PowerShell 兜底
+        gdi_error = "%s: %s" % (type(e).__name__, e)
+        try:
+            kind, payload = _shot_ps(box)
+        except Exception as e2:  # noqa: BLE001 —— 双腿全废：把两条原因都带出
+            raise RuntimeError(
+                "截图失败：GDI 主路 %s；PowerShell 兜底 %s: %s"
+                % (gdi_error, type(e2).__name__, e2)) from e2
+        return {"kind": kind, "png": payload, "gdi_error": gdi_error,
+                "box_source": box_source}
 
 
 def is_all_black(bgra, w, h, stride=4):

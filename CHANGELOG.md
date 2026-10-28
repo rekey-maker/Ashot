@@ -2,6 +2,180 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.7] - 2026-10-29
+
+### 新增（三个通用原语；**不是验证码模块**）
+- **图像指纹与差异**（`ashot/vision.py`）：`sha256`（精确）+ `dhash`/`ahash`
+  （64-bit 感知哈希，imagehash 同思路、纯整数实现）+ `hamming`；`diff`
+  用 pixelmatch 的 **YIQ 颜色距离 + threshold**，返回 changed_px/ratio/
+  bbox/size_mismatch，可输出差异图（变化涂红、其余压暗）。用途：截图
+  去重、页面变化监控、UI 回归，以及调用方自己拼"图变了就重来"。
+  **未做 pixelmatch 式抗锯齿检测**（纯 Python 成本高），收据 note 明示。
+- **元素矩形 + 可见性**（`ashot/dom.py`）：`element_rect(selector)` 返回
+  视口 CSS 矩形/中心点、`visible`（Element.checkVisibility，2024-03
+  Baseline；旧浏览器回退）、`in_viewport`/`visible_ratio`、`occluded`
+  （elementFromPoint 中心）、`pointer_events`、`dpr`、滚动位置；
+  `scroll=True` 先 scrollIntoView 再量。坐标可直接喂 cdp-click。
+- **iframe 坐标映射**：`frame_element_rect(iframe, selector)` 同源任意
+  深度走 JS 递归（一次求值）；跨域同进程走
+  `DOM.describeNode(frameId) → Page.createIsolatedWorld → 子 frame 求值
+  + DOM.getBoxModel 内容框原点`（实测 600+25,300+15 → 625,315 正确）；
+  跨站 OOPIF 如实报 `oopif_unsupported`（需要 Target 会话，本版不做）。
+  `frames()` 列 frame 树并尽力附 iframe 矩形。
+- CLI：`hash` / `diff` / `element` / `frames` / `frame-element`；
+  MCP：`ashot_hash` / `ashot_diff` / `ashot_element` / `ashot_frames` /
+  `ashot_frame_element`（**20 个工具**，需宿主重连）。
+
+### 实弹（Playwright 拉起的 Edge 156）
+- `element_rect("#btn")` → (120,80,100,40)，按中心 (170,100) 点击 →
+  页面 `__clicks` 变 1（**真点中**）；
+- 盖一层透明 div → `occluded:true` 而 `visible` 仍 true（语义分离正确）；
+- 同源 iframe：#inner → (320,210)（300+20/200+10）；跨域 data: iframe
+  的 #x → (625,315)（600+25/300+15）；`frames()` 两个 iframe 矩形正确；
+- `scroll=True`：1500px 处的按钮滚到视口 y=286（scroll_y=1214）。
+
+### 修复（实现期踩到）
+- **DOM 节点 id 是会话级的**：分多次 `cdp.call`（每次新连接）做
+  getDocument→querySelector 会报 "Could not find node with given id"；
+  跨域映射与 frames 改为**单个 Session 内完成**（`DOM.enable` 只开 DOM
+  域，不碰 Runtime.enable 红线）。
+
+### 测试
+- 108 项全绿（新增 10 项：指纹稳定性、diff 精度/尺寸不匹配/差异图、
+  element 字段与 scroll、跨域映射、OOPIF 报错、frames 扁平化、CLI）。
+
+## [0.2.6] - 2026-10-29
+
+### 修复（按《问题清单与逐条核实-2026-10-29》Q01-Q23 逐条落地）
+- **text 出界（Q15，用户实感）**：不换行/不裁切/不报错三件套一起修。
+  text op 新增 `w`（布局矩形宽）→ `_gdi_render.ps1` 走
+  `DrawString(RectangleF)` 由 GDI+ 按真实字体度量**原生自动换行**；
+  ps1 用 MeasureString 实测每个 text/dot 的 bbox 回传，Python 与画布
+  比对后写 `bounds_warn`（如 `op[0] text 超出画布：右 135px`）——
+  告警优于裁切（裁切会悄悄丢内容）。像素降级路同步认 `w`（点阵贪心折行）
+- **截图多一跳（Q16）**：`ashot_shot`/`ashot_annotate`/`ashot_cdp_shot`
+  的 `preview` **缺省翻成 true**（README/SKILL 已改），缩图预算
+  500KB→**200KB**；`preview:false` 保留旧单字符串收据
+- **窗口截图带阴影（Q17）**：`--win` 改用
+  `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 取可见帧界
+  （本机实测 446×331 → **424×320**，每侧少 11px 不可见边），失败回退
+  GetWindowRect 并标 `box_source`；`hwnd=0`（锁屏/服务态）不再拿 0 去
+  GetWindowRect，改抛可读错误
+- **改码后 MCP 进程不更新（Q18）**：所有工具收据由 `_serve` 单一出口
+  盖 `ver` 字段（文件版本号对了但进程是旧的，一眼识破）
+- **DISCOVER 单实例误伤 + 14 秒（Q04/Q20）**：进程枚举改为**检查返回码
+  与 stderr**（Win11 上 Get-CimInstance 可能 Access denied，旧实现静默
+  吞掉、退化成纯端口扫描）；端口探活改**并发 + 0.6s 超时**（实测
+  14.3s → **0.94s**）；`discover` 新增 `details/confidence/warnings`；
+  单实例也不再静默——收据带 `target`（端口/进程名/页签 title+url），
+  多实例连 `cdp-shot` 一起拒绝猜（原只有输入类拒绝）
+- **降级原因不可辨（Q08）**：矢量路失败原因写进 `degrade_reason`
+  + `backend_fallback`（旧实现只见 `backend=pixel`，设计内降级与环境
+  坏了同形）
+- **GDI 原始错误丢失（Q09）**：`capture.shot` 兜底成功时也带
+  `gdi_error`；双腿全废时把两条原因一起抛出
+- **CLI annotate 写错位置（Q07）**：`default_out()` 单源（先看 basename
+  有没有点），父目录带点（`…/my.dir/shot`）不再把产物写到上一级
+- **剪贴板 os.system（Q10）**：`os.system` → `subprocess.run`（引号拼接、
+  stderr 可见性、PS 侧 ErrorActionPreference 三处一起修）
+- **字库缓存永久（Q11）**：`fonts.list_families(refresh=)` + `clear_cache()`
+  + 300s TTL；CLI `fonts --refresh`，MCP `refresh` 参数缺省 true
+- **点击轨迹恒从左上角出发（Q12）**：`_start_point()` 缺省在目标周围
+  140~420px 随机方位起步（seed 可复现），`from_x/from_y` / CLI
+  `--from-x/--from-y` 可显式指定
+- **fullpage 坐标语义（Q06）**：全页截图收据新增
+  `coord_space=document` + `scroll_y`，hint 明说"点首屏以下要先滚、点击
+  坐标=文档坐标−scrollY"（旧的 `min()` 数值 bug v0.2.5 已修，残的是语义）
+- **schema 全 string + 布尔五连写（Q13）**：`_tool` 按默认值推
+  boolean/integer/number；布尔解析统一到 `ashot/_coerce.as_bool`
+  （mcp/cli/vector 三处共用，消灭 12 处字面量）
+- **eval 的 None/undefined 同形（Q14）**：收据补 `value_type`；重复
+  `import base64 as _b64` 去掉
+- **像素路只吃 RGBA（Q21）**：`_decode_png` 支持 8-bit 灰度/RGB/调色板/
+  灰度+α/RGBA 五类（16-bit 与隔行仍如实拒绝，报错给可操作提示）
+- **CLI 信息残缺（Q22/Q23）**：`cdp-shot` 补齐 to_css/coord_space/scroll_y
+  输出；`allow_abbrev=False`（`--ops` 不再被 `--ops-file` 前缀吞掉）；
+  `os_startfile` 去重复定义
+- **字体本地名承诺（Q19）**：本机实测 .NET 的 FontFamily.Name 也只回
+  英文名，`fonts 楷体` 必然为空——测试改为**按实际数据判定**（存在
+  本地别名就必须双命中），设计文档 §7.9.2 承诺收紧为"OS 提供本地名时"；
+  HEAD 的唯一红测试清零
+
+### 新增
+- `_gdi_render.ps1` 末行输出 `{ok, boxes:[{i,x,y,w,h}]}`（实测 bbox，
+  text/dot 都用 MeasureString）
+- `ashot/_coerce.py`（as_bool / as_int 单源）
+- 修复锁测试 28 项：dispatch 拷贝契约、discover 降级亮牌、pick_port
+  多实例拒绝、coord_space、default_out、degrade_reason、gdi_error、
+  hwnd=0、轨迹起点、换行+越界告警、RGB/调色板解码、value_type、
+  收据盖章、CLI 前缀缩写、CLI cdp-shot 坐标输出
+
+### 变更（行为/契约）
+- `preview` 三处缺省 true（**会多一次缩图子进程，约 0.3s**；不想要就传
+  `preview=false`）
+- `drag_events` 的 `jitter` 在受约束模式下仍只影响轴向微抖（amp=min），
+  MCP/CLI 两脸一致
+- 单实例 discover 也会把 `target` 写进收据；多实例时 `cdp-shot` 从
+  "静默取 [0]" 改为拒绝（与输入类同规）
+
+### 测试
+- 98 项全绿（新增 28 项修复锁），`_gdi_render.ps1` 保持纯 ASCII；
+  关键锁做了变异测试（改回旧实现即变红）
+
+### 独立审查后的追加修复（子 agent 审计：0 致命 / 1 严重 / 11 建议）
+- **S1（严重）`cdp.shot` 的 coord_space 误判**：旧判据 `sz[1] > vh*dpr+1`
+  在 `dpr` 求值失败（真实路径）时把视口截图标成"文档坐标"，`to_css`
+  同时错一倍，等于给 agent 递错误点击指引。改判整页内容高
+  （`content_h > vh+1`）；`fullpage=True` 但内容没超视口=viewport；
+  拿不到 content_h=unknown；dpr 缺失时标 `to_css_estimated` 并在 hint
+  里让先 `cdp-view`
+- 错误收据也盖 `ver`（原只在成功路径盖章——最需要识破旧进程时失效）
+- `cdp_eval` 不再把 `null`/数组误报成"不可序列化"
+- MCP schema 的坐标/端口/计数类参数按语义声明 integer（`from_x/from_y`
+  默认 None 时旧推理会落成 string）；CLI `cdp-dblclick` 补
+  `--from-x/--from-y`（与 MCP 对齐）
+- `_LAST_TARGET` 改"先 clear 再 update"（异常路径不再残留上一个目标，
+  也消除 clear/rebind 两种写法分叉）
+- `Capture._win_box` 的 Win32 原型在导入期定死（`GetWindowRect`/
+  `DwmGetWindowAttribute` 原先无 argtypes，HWND ≥ 2^31 有截断风险）
+- `_probe_ports` 用 `as_completed` 收结果（不被最慢端口按序阻塞）
+- MCP `fonts` 的 `refresh` 缺省改回 false（TTL 300s 已满足 Q11，
+  缺省 true 会把缓存架空、每次多跑一次 PowerShell）
+- 清理死代码：`mcp._describe_ports`/`mcp._resolve_cdp` 两个无调用方的
+  包装、`fonts._CACHE` 重复定义
+- 弱锁补强：Q12 直接断言"不同 seed 方位角不同"（固定偏移 mutant 原可
+  存活）；Q21 补 Sub(filter=1) 的 RGB/调色板图（bpp=4 mutant 原可存活）
+
+### 二轮审查（同日再查：1 实测 bug + 4 健壮性）
+- **S2（实测）全页坐标单位错**：`Page.getLayoutMetrics` 的 `contentSize`
+  是**已废弃的设备像素字段**（实测 Edg156：contentSize=2544×1632 vs
+  cssContentSize=1272×816，dpr=2）。旧实现拿它当 CSS 用 → 整页高被高估
+  dpr 倍、`coord_space` 把视口图报成"整页文档图"。改用 `cssContentSize`/
+  `cssLayoutViewport`（无 css* 的旧协议按 dpr 折算并标 `content_source`）；
+  坐标空间判据改为**图像实际覆盖的 CSS 高**优先；页高超过截图上限或只
+  截到视口时收据亮 `fullpage_truncated`，hint 写清"只截到 N CSS"
+  （联网+Playwright 实测：Chrome 本身**没有**夹全页截图，941×3000 CSS
+  的页在 dpr=2 下正常出 1882×6000——此前的"被夹"是单位误读）
+- 像素降级路的越界告警补齐（`_estimate_boxes` 按点阵字宽估算；
+  上一版只有 GDI+ 路有 bounds_warn）
+- `pick_port` 对最小 discover 字典（只有 ports/hint）不再 KeyError
+- 剪贴板失败信息按 OEM/GBK 解码（原按 UTF-8 解 → 中文乱码）
+- 非 8-bit PNG 的报错文案覆盖低位深调色板（原只说 16-bit）
+- **超长页预览限高**（维基 49446px 实弹）：`preview` 原先只按宽度缩，
+  长页"缩图"仍有 **2.8MB**（fit=False 却照样进上下文）。改为同时约束
+  高度（缺省 4000px，等比缩、不放大），同页缩图降到 **122KB / 60×3977
+  / fit=true**；info 增加 height
+- **超长页滚动拼接**（用户点破：CDP 本来就能控滚动）：单张
+  `captureBeyondViewport` 的高度上限**因环境而异**（实测同一份代码：
+  Playwright 拉起的 Edge 一次拍 60000px 只要 0.46s，另一实例 17000px
+  就报 "Unable to capture screenshot"）。因此策略是**先试单张、失败
+  才拼**：`_stitch_fullpage` 按视口滚动（JS scrollTop，失效退鼠标滚轮）
+  逐屏拍、按**实际 scrollY×dpr** 贴到画布、拍完还原用户滚动位置；
+  `--no-stitch` / `stitch=false` 关闭兜底，收据带 `stitched/shots`；
+  拼接画布另有像素上限，超了如实 `fullpage_truncated`。固定定位元素
+  会在每段重复（已入档）
+
+
 ## [0.2.5] - 2026-10-28
 
 ### 修复（对抗审查实锤 3 致命 / 6 严重，全部闭环；动机=滑块验证码场景可用化）

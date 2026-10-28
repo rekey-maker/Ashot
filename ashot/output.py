@@ -7,6 +7,7 @@ import ctypes
 import os
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import zlib
@@ -33,6 +34,24 @@ def bgra_to_png(w, h, bgra):
         for x in range(0, stride, 4):   # BGRA -> RGBA
             b, g, r = row[x], row[x + 1], row[x + 2]
             raw.extend(bytes((r, g, b, row[x + 3])))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+            + chunk(b"IEND", b""))
+
+
+def rgba_to_png(w, h, rgba):
+    """RGBA 像素 -> PNG 字节（8-bit RGBA）。拼接全页截图用（v0.2.6）。"""
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+
+    raw = bytearray()
+    stride = w * 4
+    for y in range(h):
+        raw.append(0)                   # filter: None
+        raw.extend(rgba[y * stride:(y + 1) * stride])
     ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", ihdr)
@@ -77,25 +96,53 @@ def save(png_bytes, out=None):
 
 # ---------- 剪贴板（--clip：阅后即焚路径；无落盘诉求时不写文件） ----------
 
+def _decode_console(data):
+    """控制台字节 -> 文本（PowerShell 的 stderr 走 OEM/GBK，按 utf-8 解
+    会出乱码；依次尝试 utf-8 / 本地代码页 / gbk，全失败才替换解码）。"""
+    import locale
+    for enc in ("utf-8", locale.getpreferredencoding(False), "gbk", "mbcs"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", "replace")
+
+
 def clip_png(png_bytes):
     """PNG 进剪贴板（CF_DIB 位图形态——PNG 剪贴板格式接收方支持参差）。
-    独立进程承载（OpenClipboard 生命周期隔离），成功返回 True。"""
+    独立进程承载（OpenClipboard 生命周期隔离），成功返回 True。
+
+    v0.2.6（Q10）：os.system 换成 subprocess.run——旧实现三重病：
+    双引号拼接（路径含 " / % / & 即坏）、stderr 直接进控制台（MCP 场景
+    等于丢失）、PS 侧无 ErrorActionPreference（失败也可能 0 退出码）。
+    现在失败原因落 stderr，返回值仍只有 bool（调用方只关心成败）。"""
     # 解 PNG 需像素：偷懒走 PowerShell 一条龙（Set-Clipboard 接图片文件，
     # Win10 1903+ 原生支持）——零 PIL 红线不破。
     tmp = os.path.join(os.environ.get("TEMP", "."),
                        "ashot_clip_%d.png" % time.time_ns())
     with open(tmp, "wb") as fh:
         fh.write(png_bytes)
-    ps = ("Add-Type -AssemblyName System.Windows.Forms;"
+    ps = ("$ErrorActionPreference='Stop';"
+          "Add-Type -AssemblyName System.Windows.Forms;"
           "Set-Clipboard -Path '%s'" % tmp.replace("'", "''"))
     try:
-        subprocess_ok = os.system('powershell -NoProfile -Command "%s"' % ps) == 0
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, timeout=30)
+        if r.returncode != 0:
+            err = _decode_console(r.stderr).strip()
+            if err:
+                print("ashot: 剪贴板写入失败：%s" % err[:300], file=sys.stderr)
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001 —— 剪贴板失败不该炸主流程
+        print("ashot: 剪贴板写入失败：%s: %s"
+              % (type(e).__name__, str(e)[:200]), file=sys.stderr)
+        return False
     finally:
         try:
             os.unlink(tmp)   # 阅后即焚：剪贴板持有位图数据，临时文件即删
         except OSError:
             pass
-    return bool(subprocess_ok)
 
 
 # ---------- retention 清理（搭自身运行便车，无常驻） ----------
@@ -129,20 +176,44 @@ def gc(retention_days=RETENTION_DAYS_DEFAULT, keep=False, directory=None):
 # ---------- 预览缩图（v0.1.11，MCP ImageContent 实验，设计文档 §7.10） ----------
 
 PREVIEW_WIDTH_DEFAULT = 1200
-PREVIEW_MAX_BYTES_DEFAULT = 500 * 1024
+# v0.2.6（Q16）：500KB → 200KB——preview 改缺省开后，每次调用都进上下文，
+# 200KB 对「确认截对了」足够（base64 后约 267KB，仍是可接受量级）。
+PREVIEW_MAX_BYTES_DEFAULT = 200 * 1024
+# v0.2.6 实弹（维基 49446px 长页）：只按宽度缩，高度仍是 49446×0.6≈3 万像素，
+# 梯次到底还有 2.8MB——直接进模型上下文会炸。缩图必须**同时约束高**
+# （整页缩略图：宽度会被压得很窄，但至少上下文安全）。
+PREVIEW_MAX_HEIGHT_DEFAULT = 4000
+
+
+def _png_size(png):
+    """PNG IHDR -> (w, h)；坏数据返回 None。"""
+    try:
+        if png[:8] != b"\x89PNG\r\n\x1a\n" or len(png) < 24:
+            return None
+        return struct.unpack(">II", bytes(png[16:24]))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
-                 max_bytes=PREVIEW_MAX_BYTES_DEFAULT):
+                 max_bytes=PREVIEW_MAX_BYTES_DEFAULT,
+                 max_height=PREVIEW_MAX_HEIGHT_DEFAULT):
     """交付侧预览缩图：PNG → 等比缩小 JPEG。编码走系统 .NET
     System.Drawing（渲染器同引擎，零依赖红线不破）。梯次 (宽,质量)
-    降档直至 ≤ max_bytes（业界口径 ~1280px/JPEG<500KB，超限保护宿主
-    上下文）；**不放大**（目标宽 = min(width, 原宽)）。
-    返回 (jpeg_bytes, info)；info = {width, quality, bytes, fit}——
+    降档直至 ≤ max_bytes；**不放大**；**高度也设上限**（超长页整页缩略
+    图不能把上下文撑爆，v0.2.6 实弹：49446px 长页按宽缩仍有 2.8MB）。
+    返回 (jpeg_bytes, info)；info = {width, height, quality, bytes, fit}——
     fit=False 表示梯次到底仍超限，如实交付最小档不假装。"""
-    w2 = max(1, int(width * 0.75))
-    w3 = max(1, int(width * 0.5))
-    ladder = ((width, 85), (width, 70), (w2, 75), (w3, 60))
+    w = int(width)
+    sz = _png_size(png_bytes)
+    if sz and sz[0] and sz[1] and max_height:
+        # 按高约束反推宽度：h' = w' * (src_h/src_w) ≤ max_height
+        by_h = int(max(1, float(max_height) * sz[0] / float(sz[1])))
+        w = min(w, by_h)
+    w = max(1, w)
+    w2 = max(1, int(w * 0.75))
+    w3 = max(1, int(w * 0.5))
+    ladder = ((w, 85), (w, 70), (w2, 75), (w3, 60))
     ladder_ps = ",".join("(%d,%d)" % s for s in ladder)
     src_fd, src_path = tempfile.mkstemp(suffix=".png")
     dst_path = src_path + ".jpg"
@@ -173,7 +244,7 @@ def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
             "  $bmp.Save('%s',$codec,$ep);"
             "  $g.Dispose();$bmp.Dispose();$ep.Dispose();"
             "  $len=(Get-Item -LiteralPath '%s').Length;"
-            "  Write-Output (\"$w $($step[1]) $len\");"
+            "  Write-Output (\"$w $h $($step[1]) $len\");"
             "  if ($len -le %d) { break }"
             "};"
             "$img.Dispose()" % (src_path.replace("'", "''"),
@@ -191,8 +262,9 @@ def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
         lines = [x for x in
                  r.stdout.decode("utf-8", "replace").splitlines()
                  if x.strip()]
-        w_s, q_s, len_s = lines[-1].split()
-        info = {"width": int(w_s), "quality": int(q_s),
+        w_s, h_s, q_s, len_s = lines[-1].split()
+        info = {"width": int(w_s), "height": int(h_s),
+                "quality": int(q_s),
                 "bytes": int(len_s), "fit": int(len_s) <= max_bytes}
         with open(dst_path, "rb") as fh:
             jpeg = fh.read()

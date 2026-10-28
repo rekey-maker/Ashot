@@ -10,6 +10,7 @@ locale 注记（实测 zh-CN）：FontFamily.Name 是 OS UI locale 敏感的
 规范名 + 本地 Name），**输出英文名**（跨机稳定），过滤双语命中；
 GetName(1033) 失败的族回退本地名。设计文档 §7.9。"""
 import subprocess
+import time
 
 _PS = "\n".join([
     "$ErrorActionPreference = 'Stop'",
@@ -24,15 +25,30 @@ _PS = "\n".join([
 ])
 
 _CACHE = None   # [(en_name, local_name)]，去重排序
+_CACHE_AT = 0.0
+_CACHE_TTL = 300.0   # 秒（v0.2.6 Q11：旧实现进程级永久——常驻 MCP 里
+# 装/删字体永远看不见；5 分钟自动过期 + clear_cache() 手动失效）
 
 
-def list_families(filter=None):
+def clear_cache():
+    """手工失效字库缓存（CLI `fonts --refresh` / MCP refresh=true）。"""
+    global _CACHE, _CACHE_AT
+    _CACHE = None
+    _CACHE_AT = 0.0
+
+
+def list_families(filter=None, refresh=False):
     """已装字体族名列表（英文规范名，排序去重）。filter=不区分大小写
     子串过滤，同时命中英文名与本地化名（如 "kai"/"楷体" 都能查到
-    KaiTi）；None=全量。名字保证可被 text op 的 font 字段解析
+    KaiTi——**前提是 OS 提供了本地名**：实测部分机器 .NET 的
+    FontFamily.Name 也返回英文名，此时本地名过滤无命中，属数据边界
+    非过滤器缺陷，见 §7.9.2 注记）；None=全量。refresh=True 强制
+    重新枚举（绕缓存）。名字保证可被 text op 的 font 字段解析
     （同源字库）。"""
-    global _CACHE
-    if _CACHE is None:
+    global _CACHE, _CACHE_AT
+    stale = (_CACHE is None or refresh or
+             (time.time() - _CACHE_AT) > _CACHE_TTL)
+    if stale:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-Command", _PS],
@@ -49,6 +65,7 @@ def list_families(filter=None):
             en, _, loc = ln.partition("\t")
             pairs.append((en.strip() or loc.strip(), loc.strip()))
         _CACHE = sorted(set(pairs))
+        _CACHE_AT = time.time()
     if filter:
         p = str(filter).lower()
         return sorted({en for en, loc in _CACHE

@@ -74,11 +74,16 @@ _PROC_PS = ("Get-CimInstance Win32_Process | Where-Object {"
             " $_.CommandLine -match '--remote-debugging-port' } | "
             "ForEach-Object { $_.CommandLine }")
 
+_PROBE_PORTS = (9222, 9223, 9224, 9225, 9226, 9227, 9228, 9229)
 
-def _probe_alive(port, timeout=2):
+
+def _probe_alive(port, timeout=0.6):
     """端口探活：/json/version 200 即活。接 Exception——扫描段里常见
     非 HTTP 服务（BadStatusLine 等），任何失败一律判不活跳过（审计
-    P2-1：窄 except 让 discover 被垃圾服务打断）。"""
+    P2-1：窄 except 让 discover 被垃圾服务打断）。
+
+    v0.2.6（Q20）：默认 timeout 2s → 0.6s。关闭端口曾经每个耗 1.7s
+    （8 个端口 = 14s），并发后整轮 <1s。"""
     try:
         http_json(port, "/json/version", timeout)
         return True
@@ -86,60 +91,202 @@ def _probe_alive(port, timeout=2):
         return False
 
 
+def _enum_browser_processes():
+    """枚举带 --remote-debugging-port 的进程 -> ([(port, cmdline)], 错误|None)。
+
+    v0.2.6（Q20）：旧实现**只看 stdout**——Win11 上 Get-CimInstance 可能
+    直接 Access denied（0x80041003），stderr 被丢弃、返回码没检查，
+    发现机制①静默失效，只剩端口扫描（且不告诉任何人）。现在失败原因
+    如实回传，由 discover 落进 warnings。"""
+    import subprocess as _sp
+    if os.name == "nt":
+        cmd = ["powershell", "-NoProfile", "-Command", _PROC_PS]
+    else:
+        cmd = ["ps", "-axo", "command="]
+    try:
+        r = _sp.run(cmd, capture_output=True, timeout=20)
+    except Exception as e:  # noqa: BLE001 —— 枚举失败降级端口扫描
+        return [], "进程枚举不可用（%s: %s）" % (type(e).__name__, str(e)[:120])
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        return [], ("进程枚举失败（rc=%s）：%s"
+                    % (r.returncode, (err[0] if err else "")[:160]))
+    out = []
+    for cl in r.stdout.decode("utf-8", "replace").splitlines():
+        if not cl.strip():
+            continue
+        m = re.search(r"--remote-debugging-port=(\d+)", cl)
+        if m:
+            out.append((int(m.group(1)), cl))
+    return out, None
+
+
+def _probe_ports(ports, timeout=0.6, workers=8):
+    """并发探活 -> {port: bool}（关闭端口的超时是串行 8 倍的根源）。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    if not ports:
+        return {}
+    res = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(ports)))) as ex:
+        futs = {ex.submit(_probe_alive, p, timeout): p for p in ports}
+        for f in as_completed(futs):   # 按完成顺序收，不被最慢的端口阻塞
+            p = futs[f]
+            try:
+                res[p] = bool(f.result())
+            except Exception:  # noqa: BLE001
+                res[p] = False
+    return res
+
+
+def _proc_name(cmdline):
+    """命令行 -> 进程名（chrome/msedge/...）：给收据一个可读身份。
+
+    注意路径可能带空格（C:\\Program Files\\...）：先按引号取，再退回
+    "到 .exe 为止"的正则——按空格切会把 "C:\\Program" 当成进程名。"""
+    s = cmdline.strip()
+    try:
+        if s.startswith('"'):
+            exe = s[1:].split('"', 1)[0]
+        else:
+            m = re.match(r"(.+?\.exe)\b", s, re.I)
+            exe = m.group(1) if m else s.split(" ")[0]
+        return os.path.basename(exe).lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def discover():
     """发现已运行浏览器（审计 P1-2，四级）：
     ① 枚举进程命令行提取 --remote-debugging-port=N / --user-data-dir=D
        （Win: Get-CimInstance；跨宿主通用——任何宿主拉起的浏览器都在）；
     ② 有 user-data-dir 读其 DevToolsActivePort；
-    ③ 扫常见端口 9222-9229 探活；
+    ③ 扫常见端口 9222-9229 探活（并发）；
     ④ 全空如实报。
-    返回 {"ports": [...], "hint": "..."}（ports 按可信度排序去重）。"""
-    ports = []
 
-    if os.name == "nt":
-        try:
-            import subprocess as _sp
-            r = _sp.run(["powershell", "-NoProfile", "-Command", _PROC_PS],
-                        capture_output=True, timeout=20)
-            cmdlines = r.stdout.decode("utf-8", "replace").splitlines()
-        except Exception:  # noqa: BLE001 —— 枚举失败降级端口扫描
-            cmdlines = []
-        for cl in cmdlines:
-            m = re.search(r"--remote-debugging-port=(\d+)", cl)
-            if m:
-                ports.append(int(m.group(1)))
-                udd = re.search(r"--user-data-dir=(\"[^\"]+\"|\S+)", cl)
-                if udd:
-                    d = udd.group(1).strip('"')
-                    try:
-                        ports.append(find_port_from_profile(d))
-                    except RuntimeError:
-                        pass
-    else:
-        # Mac/Linux（批2 平台）：ps 枚举同语义；批1 先落实现保跨平台
-        try:
-            import subprocess as _sp
-            r = _sp.run(["ps", "-axo", "command="], capture_output=True,
-                        timeout=20)
-            cmdlines = r.stdout.decode("utf-8", "replace").splitlines()
-        except Exception:  # noqa: BLE001
-            cmdlines = []
-        for cl in cmdlines:
-            m = re.search(r"--remote-debugging-port=(\d+)", cl)
-            if m:
-                ports.append(int(m.group(1)))
-
-    for p in (9222, 9223, 9224, 9225, 9226, 9227, 9228, 9229):
-        ports.append(p)
-    seen, uniq = set(), []
-    for p in ports:
-        if p not in seen and _probe_alive(p):
+    返回 {
+      "ports": [...],                       # 按可信度排序去重（向后兼容）
+      "details": [{port, source, process, user_data_dir}],
+      "confidence": "process"|"scan"|"none",
+      "warnings": [...],                    # 枚举失败等（v0.2.6 Q20：不静默）
+      "hint": "..."}
+    """
+    pairs, err = _enum_browser_processes()
+    cands = []   # (port, source, process, user_data_dir)
+    seen = set()
+    for port, cl in pairs:
+        if port in seen:
+            continue
+        seen.add(port)
+        udd = ""
+        m = re.search(r"--user-data-dir=(\"[^\"]+\"|\S+)", cl)
+        if m:
+            udd = m.group(1).strip('"')
+        cands.append((port, "process", _proc_name(cl), udd))
+        if udd:
+            try:
+                p2 = find_port_from_profile(udd)
+                if p2 not in seen:
+                    seen.add(p2)
+                    cands.append((p2, "process", _proc_name(cl), udd))
+            except RuntimeError:
+                pass
+    for p in _PROBE_PORTS:
+        if p not in seen:
             seen.add(p)
-            uniq.append(p)
-    return {"ports": uniq, "hint": ("CDP 端点 %s" % uniq if uniq else
-                                    "未发现运行中的调试浏览器——以 "
-                                    "--remote-debugging-port=9222 重启"
-                                    "浏览器，或用 cdp-shot --port 指定")}
+            cands.append((p, "scan", "", ""))
+    alive = _probe_ports([c[0] for c in cands])
+    details = []
+    ports = []
+    for port, source, proc, udd in cands:
+        if alive.get(port):
+            ports.append(port)
+            details.append({"port": port, "source": source,
+                            "process": proc, "user_data_dir": udd,
+                            "alive": True})
+    warnings = [err] if err else []
+    conf = ("process" if any(d["source"] == "process" for d in details)
+            else ("scan" if details else "none"))
+    if not ports:
+        hint = ("未发现运行中的调试浏览器——以 --remote-debugging-port=9222 "
+                "重启浏览器（Chrome 136+ 需非默认 --user-data-dir），"
+                "或用 cdp-shot --port 指定")
+    else:
+        hint = "CDP 端点 %s" % ports
+        if conf == "scan":
+            hint += "（端口扫描所得，未取到进程身份——可能是别的工具拉起的实例）"
+    return {"ports": ports, "details": details, "confidence": conf,
+            "warnings": warnings, "hint": hint}
+
+
+def describe_ports(ports, details=None, index=0):
+    """多实例描述（v0.2.6 单源）：每个端口的首个页签 title/url + 进程名。
+    列不出来就只给端口，不编造（原 mcp._describe_ports / cli 内联两份）。"""
+    by_port = {d["port"]: d for d in (details or [])}
+    lines = []
+    for p in ports:
+        d = by_port.get(p) or {}
+        head = None
+        try:
+            ts = [t for t in tabs(int(p))
+                  if not t["url"].startswith(("devtools://", "chrome://"))]
+            head = ts[0] if ts else None
+        except Exception:  # noqa: BLE001
+            pass
+        who = d.get("process") or ""
+        prefix = ("[%s] " % who) if who else ""
+        if head:
+            lines.append("  --port %s  %s%s | %s"
+                         % (p, prefix, (head.get("title") or "")[:40],
+                            (head.get("url") or "")[:60]))
+        else:
+            lines.append("  --port %s  %s（无法读取页签）" % (p, prefix))
+    return lines
+
+
+def pick_port(port=None, allow_multi=False):
+    """解析目标端口 -> (port, target_info)。
+
+    安全边界（v0.2.6 Q04）：**单实例也不再静默**——target_info 带
+    source/process/warnings，由收据透出，agent 能一眼看出"这是谁家的
+    浏览器"；多实例时输入类动作直接报错（列出各实例页签），只读的
+    cdp-tabs 传 allow_multi=True。
+
+    target_info = {"port", "source", "process", "warnings"}；
+    页签级信息（title/url）由 target_info() 再查一次（多一次本地 HTTP，
+    但收据才有可核对的指纹）。"""
+    if port not in (None, "", 0):
+        return int(port), {"port": int(port), "source": "explicit",
+                           "process": "", "warnings": []}
+    disc = discover()
+    if not disc["ports"]:
+        raise RuntimeError(disc["hint"])
+    if len(disc["ports"]) > 1 and not allow_multi:
+        raise RuntimeError(
+            "发现 %d 个调试浏览器实例，不安全猜：请用 --port 指定目标\n%s"
+            % (len(disc["ports"]),
+               "\n".join(describe_ports(disc["ports"],
+                                         disc.get("details") or []))))
+    p = disc["ports"][0]
+    det = next((d for d in (disc.get("details") or [])
+                if d.get("port") == p), {})
+    return p, {"port": p, "source": det.get("source", "scan"),
+               "process": det.get("process", ""),
+               "warnings": disc.get("warnings") or []}
+
+
+def target_info(port, index=0):
+    """目标身份（收据用）：端口 + 第 index 个页签的 title/url。失败不抛。"""
+    info = {"port": int(port)}
+    try:
+        pages = [t for t in tabs(int(port))
+                 if not t["url"].startswith(("devtools://", "chrome://"))]
+        if pages:
+            t = pages[max(0, min(int(index), len(pages) - 1))]
+            info["title"] = (t.get("title") or "")[:80]
+            info["url"] = (t.get("url") or "")[:200]
+    except Exception as e:  # noqa: BLE001 —— 身份是附加项，不炸主流程
+        info["error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    return info
 
 
 # ---------- WebSocket 面（RFC 6455 最小子集，审计 P2-11 全规格） ----------
@@ -628,13 +775,29 @@ def move_along(ws_url, x1, y1, x2, y2, steps=0, jitter=2.0, seed=None,
     return len(pts), pts[-1]
 
 
-def _approach_events(x, y, button, seed=None, approach_ms=None):
+def _start_point(x, y, seed=None, start=None):
+    """接近轨迹的起点（v0.2.6 Q12）。
+
+    旧实现恒从 (0,0) 出发——每条点击轨迹都从屏幕左上角起步，本身就是
+    稳定可检测的指纹（真人鼠标有历史位置）。缺省改为：目标周围
+    140~420px 的随机方位点（seed 可复现），也可由调用方显式指定 start。
+    """
+    if start is not None:
+        return float(start[0]), float(start[1])
+    rnd = random.Random(seed)
+    d = rnd.uniform(140.0, 420.0)
+    a = rnd.uniform(0.0, 2.0 * math.pi)
+    return max(0.0, x + math.cos(a) * d), max(0.0, y + math.sin(a) * d)
+
+
+def _approach_events(x, y, button, seed=None, approach_ms=None, start=None):
     """靠近目标的事件序列（带节奏延时，v0.2.5）。
 
     旧版 click 的接近轨迹是"瞬间铺完"的——空间上是曲线，时间上等于
     瞬移。真人从 A 点移到 B 点要 100~300ms，这里补上。approach_ms=0
-    关闭延时（最省时间）。"""
-    traj = _trajectory(0, 0, x, y, seed=seed)
+    关闭延时（最省时间）。start=起点（缺省见 _start_point）。"""
+    sx, sy = _start_point(x, y, seed=seed, start=start)
+    traj = _trajectory(sx, sy, x, y, seed=seed)
     if approach_ms is None:
         approach_ms = max(120.0, min(320.0, 90.0 + math.hypot(x, y) * 0.35))
     delays = _spread_delays([t for t, _x, _y in traj], float(approach_ms))
@@ -644,13 +807,14 @@ def _approach_events(x, y, button, seed=None, approach_ms=None):
 
 
 def click_events(x, y, button="left", human=True, seed=None,
-                 approach_ms=None):
+                 approach_ms=None, start=None):
     """单击：human=True 先沿人类化轨迹移动到位再按下（v0.2.4）；
-    否则单步 moved（旧行为）。approach_ms 控制靠近耗时（0=不等）。"""
+    否则单步 moved（旧行为）。approach_ms 控制靠近耗时（0=不等）。
+    start=接近轨迹起点（缺省随机方位，见 _start_point）。"""
     seq = []
     if human:
         seq.extend(_approach_events(x, y, button, seed=seed,
-                                    approach_ms=approach_ms))
+                                    approach_ms=approach_ms, start=start))
     else:
         seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
     seq.append({"type": "mousePressed", "x": x, "y": y,
@@ -665,13 +829,13 @@ def click_events(x, y, button="left", human=True, seed=None,
 
 
 def dblclick_events(x, y, button="left", count=2, human=True, seed=None,
-                    approach_ms=None):
+                    approach_ms=None, start=None):
     """双击/多击：human=True 先人类化轨迹到位（v0.2.4）；False=单步
     moved 旧行为。clickCount 递增序列（浏览器据此合成 dblclick）。"""
     seq = []
     if human:
         seq.extend(_approach_events(x, y, button, seed=seed,
-                                    approach_ms=approach_ms))
+                                    approach_ms=approach_ms, start=start))
     else:
         seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
     seq.append({"type": "mousePressed", "x": x, "y": y,
@@ -905,30 +1069,192 @@ def layout(ws, timeout=15):
     目测截图坐标去点击必然落空（2026-10-28 实弹：1272×816 视口出图
     2544×1632，按截图点\"点赞\"打在了视频画面上）。"""
     m = call(ws, "Page.getLayoutMetrics", {}, timeout)
-    vp = m.get("cssLayoutViewport") or {}
+    # **单位陷阱（v0.2.6 二轮实锤）**：getLayoutMetrics 的 contentSize /
+    # layoutViewport 是**已废弃字段，可能是设备像素**（实测 Edg156：
+    # contentSize=2544×1632 而 cssContentSize=1272×816，dpr=2）；
+    # 旧实现拿 contentSize 当 CSS 用 → 全页高被高估 dpr 倍，坐标空间
+    # 一路错。现在优先 css*，content_w/h 恒为 CSS 像素。
+    vp = m.get("cssLayoutViewport") or m.get("layoutViewport") or {}
+    cs = m.get("cssContentSize")
+    src = "css"
+    if not cs:
+        cs = m.get("contentSize") or {}   # 旧版无 css*：下面按 dpr 折算
+        src = "device"
     out = {
         "vw": int(vp.get("clientWidth") or 0),
         "vh": int(vp.get("clientHeight") or 0),
-        "content_w": (m.get("contentSize") or {}).get("width"),
-        "content_h": (m.get("contentSize") or {}).get("height"),
+        "content_w": cs.get("width"),
+        "content_h": cs.get("height"),
+        "content_source": src,
         "visual": m.get("cssVisualViewport") or {},
     }
     dpr = None
     try:
-        r = call(ws, "Runtime.evaluate",
-                 {"expression": "window.devicePixelRatio",
-                  "returnByValue": True}, timeout)
-        dpr = (r.get("result") or {}).get("value")
-    except Exception:  # noqa: BLE001 —— dpr 是可选附加项
+        # 一次求值拿齐 dpr + 滚动位置（v0.2.6 Q06：全页截图的坐标是
+        # **文档坐标**，点首屏以下要减 scrollY——收据得给出这个数）
+        r = call(ws, "Runtime.evaluate", {
+            "expression": "({dpr: window.devicePixelRatio,"
+                          " scrollY: (window.scrollY||0),"
+                          " scrollX: (window.scrollX||0)})",
+            "returnByValue": True}, timeout)
+        val = (r.get("result") or {}).get("value") or {}
+        dpr = val.get("dpr")
+        out["scroll_y"] = val.get("scrollY")
+        out["scroll_x"] = val.get("scrollX")
+    except Exception:  # noqa: BLE001 —— dpr/滚动是可选附加项
         pass
+    if src == "device" and dpr:
+        # 老协议只有设备像素字段：折算回 CSS（拿不到 dpr 则保持原值并标
+        # content_source，收据会显示"单位未折算"）
+        out["content_w"] = (out["content_w"] or 0) / float(dpr)
+        out["content_h"] = (out["content_h"] or 0) / float(dpr)
+        out["content_source"] = "device/dpr"
     return out, dpr
 
 
-def shot(port, ws=None, index=0, fullpage=True):
+# 单张 captureBeyondViewport 的高度上限**与环境有关**（v0.2.6 实测：
+# 同一份代码 Playwright 拉起的 Edge 能一次拍 60000px，另一实例 17000px
+# 就报 "Unable to capture screenshot"）——所以策略是"先试单张，失败
+# 再滚动拼接"，不按固定阈值预判。拼接画布另有像素上限防内存爆。
+_STITCH_MAX_PIXELS = 40_000_000   # 拼接画布上限（RGBA 约 160MB）
+
+
+def _scroll_to(ws, y, timeout=5):
+    """文档滚动到 CSS y -> 实际 scrollY（供拼接用）。
+
+    优先 `document.scrollingElement`（JS 滚动，确定性、无惯性）；页面
+    用内层容器滚动时 window 不动 → 退回鼠标滚轮事件（v0.2.6 实锤：
+    同一句 scrollTop 在某些 SPA 上不生效）。"""
+    y = float(y)
+    expr = ("(function(){var se=document.scrollingElement"
+            "||document.documentElement;se.scrollTop=%d;"
+            "return window.scrollY;})()" % int(round(y)))
+    got = None
+    try:
+        r = call(ws, "Runtime.evaluate",
+                 {"expression": expr, "returnByValue": True}, timeout)
+        got = (r.get("result") or {}).get("value")
+    except Exception:  # noqa: BLE001 —— 滚动失败下面还有轮子兜底
+        got = None
+    if got is not None and abs(float(got) - y) <= 2:
+        return float(got)
+    # 轮子兜底：滚动量按差值给，坐标取视口中心
+    try:
+        lay, _dpr = layout(ws, timeout)
+        cx, cy = lay["vw"] // 2, lay["vh"] // 2
+        delta = y - float(got or 0)
+        ev = {"type": "mouseWheel", "x": cx, "y": cy,
+              "deltaX": 0, "deltaY": int(delta), "modifiers": 0}
+        dispatch(ws, [ev], realtime=False)
+    except Exception:  # noqa: BLE001
+        pass
+    # 等滚动落定（平滑滚动/异步）：读 scrollY 直到逼近或超时
+    for _ in range(20):
+        time.sleep(0.02)
+        try:
+            r = call(ws, "Runtime.evaluate",
+                     {"expression": "window.scrollY", "returnByValue": True},
+                     timeout)
+            cur = (r.get("result") or {}).get("value")
+            if cur is not None and abs(float(cur) - y) <= 2:
+                return float(cur)
+            got = cur if cur is not None else got
+        except Exception:  # noqa: BLE001
+            continue
+    return float(got or 0)
+
+
+def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):
+    """滚动 + 拼接整页截图（v0.2.6，超长页兜底）。
+
+    为什么需要：`captureBeyondViewport` 的高度上限**因环境而异**
+    （实测同一份代码：Playwright 拉起的 Edge 能一次拍 60000px，另一
+    实例 17000px 就报 "Unable to capture screenshot"），撞上就只能按
+    视口分段拍再拼。做法：
+      1. 每个目标 y 滚动到位（JS scrollTop，失败退轮子），读回实际 scrollY；
+      2. 拍**视口**（captureBeyondViewport=false），按实际 scrollY×dpr 贴到画布；
+      3. 拍完恢复原滚动位置。
+    诚实边界：固定定位元素（吸顶栏）会在每段重复；拼接高度有像素上限，
+    超了如实标 fullpage_truncated。"""
+    from . import annotate as _px   # 仅借用 PNG 解码（无反向依赖）
+    from . import output as _out
+
+    vh = int(lay.get("vh") or 0)
+    total_css = float(lay.get("content_h") or 0)
+    scale = float(dpr or 1)
+    if vh <= 0 or total_css <= 0:
+        raise RuntimeError("拼接截图缺少视口/整页尺寸（vw/vh/content_h）")
+    orig = float(lay.get("scroll_y") or 0)
+    shots = []
+    W = 0
+    prev_actual = -1.0
+    try:
+        y = 0.0
+        while y < total_css - 0.5:
+            actual = _scroll_to(ws, y, timeout)
+            if y > 0 and actual <= prev_actual + 0.5:
+                # 滚动没推进（内层容器/滚动被锁）：继续拍只会重复同一屏
+                break
+            prev_actual = actual
+            res = call(ws, "Page.captureScreenshot",
+                       {"format": "png", "captureBeyondViewport": False},
+                       timeout)
+            data = res.get("data")
+            if not data:
+                raise RuntimeError("拼接时 captureScreenshot 无数据")
+            png = base64.b64decode(data)
+            w, h, px = _px._decode_png(png)
+            W = max(W, w)
+            shots.append((actual, w, h, px))
+            # 每步按视口高推进；最后一屏由滚动夹到页底，循环自然结束
+            y += max(1, vh)
+        if not shots or W <= 0:
+            raise RuntimeError("拼接失败：没有拍到任何视口图")
+        H = min(int(round(total_css * scale)), int(max_pixels / max(1, W)))
+        canvas = bytearray(W * H * 4)
+        for actual, w, h, px in shots:
+            oy = int(round(actual * scale))
+            if oy >= H or oy < 0:
+                continue
+            rows = min(h, H - oy)
+            n = min(w, W) * 4
+            for r in range(rows):
+                src = r * w * 4
+                dst = ((oy + r) * W) * 4
+                canvas[dst:dst + n] = px[src:src + n]
+        png = _out.rgba_to_png(W, H, canvas)
+    finally:
+        try:
+            _scroll_to(ws, orig, timeout)   # 复原用户滚动位置
+        except Exception:  # noqa: BLE001
+            pass
+    info = {"fullpage": True, "w": W, "h": H,
+            "vw": int(lay.get("vw") or 0), "vh": vh,
+            "dpr": scale, "to_css": round(1.0 / scale, 4),
+            "coord_space": "document", "scroll_y": orig,
+            "stitched": True, "shots": len(shots),
+            "content_h_css": round(total_css, 1),
+            "hint": ("滚动拼接：%d 张视口图拼成整页（文档坐标；点击坐标 = "
+                     "文档坐标 − scrollY）。固定定位元素会在每段重复。"
+                     % len(shots))}
+    if H < int(round(total_css * scale)) - 1:
+        info["fullpage_truncated"] = True
+        info["hint"] += ("（画布上限 %d px，只拼到 %.0f CSS 高）"
+                         % (H, H / scale))
+    return png, info
+
+
+def shot(port, ws=None, index=0, fullpage=True, stitch=True,
+         max_pixels=_STITCH_MAX_PIXELS):
     """对第 index 个 page 标签截图 -> (png_bytes, info)。
+
     fullpage=captureBeyondViewport（Chrome 90+，视口外也截）。
+    **超长页自动拼接（v0.2.6）**：先试单张 captureBeyondViewport
+    （上限因环境而异，实测从 17000 到 60000+ 都见过）；失败时按视口
+    滚动逐屏拍、拼成整页（stitch=False 关闭，收据会如实报错/截断）。
     info 含 w/h（PNG 真实像素）与 vw/vh/dpr/to_css——**截图坐标 ×
-    to_css = 点击用的 CSS 坐标**（详见 layout() 的说明）。"""
+    to_css = 点击用的 CSS 坐标**（详见 layout() 的说明）；拼接时额外带
+    stitched/shots/hint。"""
     if ws is None:
         pages = tabs(port)
         pages = [t for t in pages
@@ -938,23 +1264,41 @@ def shot(port, ws=None, index=0, fullpage=True):
         ws = pages[max(0, min(int(index), len(pages) - 1))]["ws"]
     if not ws:
         raise RuntimeError("目标标签页缺 webSocketDebuggerUrl")
-    res = call(ws, "Page.captureScreenshot",
-               {"format": "png", "captureBeyondViewport": bool(fullpage)})
-    import base64 as _b64
+    lay = dpr = None
+    if fullpage:
+        try:
+            lay, dpr = layout(ws)
+        except Exception:  # noqa: BLE001 —— 量不到尺寸不阻塞截图
+            lay = dpr = None
+    try:
+        # **先试单张**（v0.2.6 实测修正）：captureBeyondViewport 的高度
+        # 上限是**环境相关**的——同一份代码，Playwright 拉起的 Edge 能
+        # 一次拍 60000px（0.5s），另一实例 17000px 就报 "Unable to
+        # capture screenshot"。所以不做"超过某阈值就拼"的预判（会把
+        # 0.5s 的活干成 63 张拼接），失败再兜底。
+        res = call(ws, "Page.captureScreenshot",
+                   {"format": "png", "captureBeyondViewport": bool(fullpage)})
+    except RuntimeError:
+        if fullpage and stitch and lay:
+            return _stitch_fullpage(ws, lay, dpr, max_pixels=max_pixels)
+        raise
     data = res.get("data")
     if not data:
         raise RuntimeError("captureScreenshot 无数据（result=%r）"
                            % (list(res),))
-    png = _b64.b64decode(data)
+    png = base64.b64decode(data)
     info = {"ws": ws, "fullpage": bool(fullpage)}
     sz = png_size(png)
     if sz:
         info["w"], info["h"] = sz[0], sz[1]
     try:
-        lay, dpr = layout(ws)
+        if lay is None:
+            lay, dpr = layout(ws)
         info["vw"], info["vh"] = lay["vw"], lay["vh"]
         if dpr:
             info["dpr"] = dpr
+        if lay.get("scroll_y") is not None:
+            info["scroll_y"] = lay["scroll_y"]
         if sz and lay["vw"] and lay["vh"]:
             # **不能用 min(vw/w, vh/h)**——全页截图时 vh 是视口高而
             # 图高是整页（content_h×dpr），两者相除会小一个数量级，按它
@@ -962,15 +1306,75 @@ def shot(port, ws=None, index=0, fullpage=True):
             if dpr:
                 to_css = 1.0 / float(dpr)
             else:
-                # 拿不到 dpr 时退化：假设非全页截图，图宽 = 视口宽
+                # 拿不到 dpr 时退化：假设图宽 = 视口宽（各向同性缩放）
                 to_css = lay["vw"] / float(sz[0])
+                info["to_css_estimated"] = True
             info["to_css"] = round(to_css, 4)
-            info["hint"] = ("截图像素 × to_css = 点击用的 CSS 坐标；"
-                            "点空多半是没换算")
+            # v0.2.6（Q06）：全页截图给的是**文档坐标**，而
+            # Input.dispatchMouseEvent 吃**视口坐标**——hint 必须带限定语。
+            # 判据：**图像实际覆盖的 CSS 高**（sz[1]/dpr）优先；dpr 拿不到
+            # 才退回 content_h（layout 已统一成 CSS 单位）。
+            content_h = lay.get("content_h") or 0
+            img_css_h = (sz[1] / float(dpr)) if dpr else None
+            if not fullpage:
+                info["coord_space"] = "viewport"
+                info["hint"] = ("截图像素 × to_css = 点击用的 CSS 坐标；"
+                                "点空多半是没换算")
+                if not dpr:
+                    info["hint"] += "（dpr 未取到，to_css 为退化估算，先用 cdp-view 核 dpr）"
+            elif img_css_h is not None:
+                if img_css_h > lay["vh"] + 1:
+                    info["coord_space"] = "document"
+                    info["hint"] = (
+                        "整页截图：截图像素 × to_css = **文档坐标**，"
+                        "不是视口坐标。点首屏以下内容要先滚动，点击坐标 = "
+                        "文档坐标 − scrollY（当前 scroll_y=%s）；或用 "
+                        "fullpage=false 只截视口。"
+                        % info.get("scroll_y", "?"))
+                    if content_h and img_css_h < content_h - 2:
+                        # 页太高/超出 Chromium 截图上限：如实标注截断
+                        info["fullpage_truncated"] = True
+                        info["hint"] += ("（注意：整页高 %d CSS，本次只截到 "
+                                         "%d CSS——页太高，Chrome 截断）"
+                                         % (round(content_h), round(img_css_h)))
+                else:
+                    # 图像就是视口大小（content_h 也≈视口：页面没有可滚内容）
+                    info["coord_space"] = "viewport"
+                    info["hint"] = ("截图像素 × to_css = 点击用的 CSS 坐标；"
+                                    "点空多半是没换算")
+                    if content_h and content_h > lay["vh"] + 1:
+                        info["fullpage_truncated"] = True
+                        info["hint"] += ("（整页高 %d CSS，但本次只截到视口——"
+                                         "首屏以下需先滚动再截）" % round(content_h))
+            elif content_h and content_h > lay["vh"] + 1:
+                # 拿不到 dpr：退回内容高判据，并如实标注为估算
+                info["coord_space"] = "document"
+                info["hint"] = (
+                    "整页截图：截图像素 × to_css = **文档坐标**，"
+                    "不是视口坐标。点首屏以下内容要先滚动，点击坐标 = "
+                    "文档坐标 − scrollY（当前 scroll_y=%s）。"
+                    "dpr 未取到，to_css 为退化估算（图宽=视口宽），"
+                    "先用 cdp-view 核 dpr。" % info.get("scroll_y", "?"))
+            elif content_h:
+                info["coord_space"] = "viewport"
+                info["hint"] = ("截图像素 × to_css = 点击用的 CSS 坐标；"
+                                "点空多半是没换算")
+            else:
+                info["coord_space"] = "unknown"
+                info["hint"] = ("拿不到整页内容高，无法判断截图是视口还是"
+                                "文档坐标——先 cdp-view，或加 --viewport 只截视口")
     except Exception as e:  # noqa: BLE001 —— 布局信息是附加项，失败不吞主收据
         # 但**必须留下痕迹**：收据缺 vw/vh/to_css 时调用方要能看出是"拿
         # 不到"而不是"本来就没有"，否则会拿 w/h 当 CSS 坐标去点（必空）
         info["layout_error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
         info["hint"] = ("视口信息获取失败（页签忙/已关/CDP 异常），"
                         "to_css 缺失——不要直接用 w/h 当点击坐标")
+    if (fullpage and stitch and lay and info.get("fullpage_truncated")
+            and not info.get("stitched")):
+        # 兜底：单张成功但只覆盖了视口/一部分（例：页面用固定布局把
+        # captureBeyondViewport 限制住）——滚动拼接能拿到真整页。
+        try:
+            return _stitch_fullpage(ws, lay, dpr, max_pixels=max_pixels)
+        except Exception as e:  # noqa: BLE001 —— 拼接失败保留原始收据
+            info["stitch_error"] = "%s: %s" % (type(e).__name__, str(e)[:160])
     return png, info
