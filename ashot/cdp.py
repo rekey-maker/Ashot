@@ -468,43 +468,84 @@ def key_events(key, modifiers=0, text=None):
     return seq
 
 
+_BUTTON_MASK = {"left": 1, "right": 2, "middle": 4}   # 审计 P2-1：按下
+# 键位掩码（Playwright toButtonsMask 同款）——旧版硬编码 1 让中键/右键
+# 按下时 e.buttons 矛盾
+
+
+def _press_mask(button):
+    return _BUTTON_MASK.get(str(button), 1)
+
+
+def dblclick_events(x, y, button="left", count=2):
+    """双击/多击 = clickCount=count 的 pressed→released→pressed→
+    released（CDP 语义：同一位置快速续击 clickCount 递增，浏览器据此
+    合成 dblclick 事件）。纯函数可单测。"""
+    x, y = float(x), float(y)
+    press = _press_mask(button)
+    seq = [{"type": "mouseMoved", "x": x, "y": y, "modifiers": 0}]
+    for i in range(1, max(2, int(count)) + 1):
+        seq.append({"type": "mousePressed", "x": x, "y": y,
+                    "button": button, "buttons": press, "clickCount": i,
+                    "modifiers": 0})
+        seq.append({"type": "mouseReleased", "x": x, "y": y,
+                    "button": button, "buttons": 0, "clickCount": i,
+                    "modifiers": 0})
+    return seq
+
+
 def drag_events(x1, y1, x2, y2, steps=8, button="left"):
     """拖拽 = mousePressed -> 插值 mouseMoved×steps -> mouseReleased
     （含按下/释放的 clickCount 与 buttons 位）。纯函数可单测。"""
     x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
     steps = max(1, int(steps))
+    press = _press_mask(button)
     seq = [{"type": "mouseMoved", "x": x1, "y": y1, "modifiers": 0}]
     seq.append({"type": "mousePressed", "x": x1, "y": y1,
-                "button": button, "buttons": 1, "clickCount": 1,
+                "button": button, "buttons": press, "clickCount": 1,
                 "modifiers": 0})
     for i in range(1, steps + 1):
         t = i / steps
         seq.append({"type": "mouseMoved",
                     "x": round(x1 + (x2 - x1) * t, 2),
                     "y": round(y1 + (y2 - y1) * t, 2),
-                    "buttons": 1, "modifiers": 0})
+                    "buttons": press, "modifiers": 0})
     seq.append({"type": "mouseReleased", "x": x2, "y": y2,
                 "button": button, "buttons": 0, "clickCount": 1,
                 "modifiers": 0})
     return seq
 
 
+def insert_text_events(text):
+    """填表整段输入（**独立命令 Input.insertText**——粘贴式，不逐键击、
+    不触发每键 keydown，与用户键鼠天然隔离）。v0.2.3 实弹修正：曾经
+    前置 rawKeyDown(VK229) 占位事件，实弹证实非必需且 insertText 不是
+    dispatchKeyEvent 的事件类型。返回单事件序列。"""
+    return [{"type": "insertText", "text": str(text)}]
+
+
 def dispatch(ws_url, events, timeout=30):
-    """向 ws_url 逐条派发 Input.dispatch* 命令（复用 call 的消息级
-    往返——每事件一次连接略重但批1 语义最简；返回成功条数）。
-    路由：keyDown/keyUp/rawKeyDown/char → dispatchKeyEvent；其余
-    （mousePressed/mouseReleased/mouseMoved/mouseWheel）→
-    dispatchMouseEvent。unresolved 标记（未知键名透传）会被剥除并
-    汇总——返回 (n, unresolved_keys)。"""
+    """向 ws_url 逐条派发 Input.dispatch* / Input.insertText 命令（复用
+    call 的消息级往返——每事件一次连接略重但批1 语义最简；返回
+    (成功条数, unresolved keys)。
+    路由：keyDown/keyUp/rawKeyDown/char → dispatchKeyEvent；insertText
+    → **独立命令 Input.insertText**（v0.2.3 实弹修正：它不是
+    dispatchKeyEvent 的事件类型）；其余（mousePressed/mouseReleased/
+    mouseMoved/mouseWheel）→ dispatchMouseEvent。"""
     _KEY_TYPES = ("keyDown", "keyUp", "rawKeyDown", "char")
     n = 0
     unresolved = []
     for ev in events:
         if ev.pop("unresolved", False) and ev.get("key") not in unresolved:
             unresolved.append(ev.get("key"))
-        method = ("Input.dispatchKeyEvent" if ev.get("type") in _KEY_TYPES
-                  else "Input.dispatchMouseEvent")
-        call(ws_url, method, ev, timeout)
+        t = ev.get("type")
+        if t == "insertText":
+            call(ws_url, "Input.insertText",
+                 {"text": ev.get("text", "")}, timeout)
+        elif t in _KEY_TYPES:
+            call(ws_url, "Input.dispatchKeyEvent", ev, timeout)
+        else:
+            call(ws_url, "Input.dispatchMouseEvent", ev, timeout)
         n += 1
     return n, unresolved
 

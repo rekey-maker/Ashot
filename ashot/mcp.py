@@ -257,6 +257,36 @@ def _cdp_drag(x1, y1, x2, y2, steps=8, button="left", port=None,
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
+def _cdp_dblclick(x, y, button="left", count=2, port=None, index=0,
+                  ws=None):
+    """CDP 双击/多击（v0.2.3）：clickCount 递增序列，浏览器据此合成
+    dblclick 事件。x/y=CSS 像素。返回 {ok, dispatched}。需宿主重连
+    出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    seq = cdp.dblclick_events(x, y, button=button, count=int(count or 2))
+    n, _ = cdp.dispatch(ws_url, seq)
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+
+
+def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None):
+    """CDP 整段文本输入（v0.2.3 填表利器）：Input.insertText 粘贴式
+    （不逐键击、不触发每键 keydown）。x/y 可选——先点击聚焦输入框
+    再输入。**与用户键鼠天然隔离**：CDP 事件只进指定标签页，不占用户
+    键盘（v0.2.0 §4.2.2）。返回 {ok, dispatched}。需宿主重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    seq = ([{"type": "mouseMoved", "x": int(x), "y": int(y),
+             "modifiers": 0},
+            {"type": "mousePressed", "x": int(x), "y": int(y),
+             "button": "left", "buttons": 1, "clickCount": 1,
+             "modifiers": 0},
+            {"type": "mouseReleased", "x": int(x), "y": int(y),
+             "button": "left", "buttons": 0, "clickCount": 1,
+             "modifiers": 0}] if x is not None and y is not None
+        else []) + cdp.insert_text_events(text)
+    n, _ = cdp.dispatch(ws_url, seq)
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+
+
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
@@ -268,6 +298,8 @@ _tool_named("ashot_cdp_key", _cdp_key)
 _tool_named("ashot_cdp_wheel", _cdp_wheel)
 _tool_named("ashot_cdp_click", _cdp_click)
 _tool_named("ashot_cdp_drag", _cdp_drag)
+_tool_named("ashot_cdp_dblclick", _cdp_dblclick)
+_tool_named("ashot_cdp_type", _cdp_type)
 
 _stop = False
 

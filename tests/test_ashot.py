@@ -422,7 +422,8 @@ def test_mcp_tool_schemas():
                                   "ashot_show", "ashot_cdp_tabs",
                                   "ashot_cdp_shot", "ashot_cdp_key",
                                   "ashot_cdp_wheel", "ashot_cdp_click",
-                                  "ashot_cdp_drag"}
+                                  "ashot_cdp_drag", "ashot_cdp_dblclick",
+                                  "ashot_cdp_type"}
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
@@ -443,6 +444,14 @@ def test_mcp_tool_schemas():
     cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
     assert cs["required"] == []
     assert set(cs["properties"]) == {"port", "index", "fullpage", "out"}
+    db = mcp_mod.TOOLS["ashot_cdp_dblclick"]["inputSchema"]
+    assert db["required"] == ["x", "y"]
+    assert set(db["properties"]) == {"x", "y", "button", "count",
+                                     "port", "index", "ws"}
+    tp = mcp_mod.TOOLS["ashot_cdp_type"]["inputSchema"]
+    assert tp["required"] == ["text"]
+    assert set(tp["properties"]) == {"text", "x", "y", "port", "index",
+                                     "ws"}
     for nm, req, props in (
             ("ashot_cdp_key", ["key"],
              {"key", "text", "modifiers", "port", "index", "ws"}),
@@ -1258,6 +1267,54 @@ def test_drag_events_sequence():
         assert e["buttons"] == 1
     assert seq[-1]["buttons"] == 0
     assert seq[-1]["x"] == 110 and seq[-1]["y"] == 60
+    # 中键拖拽 buttons 位（审计 P2-1：press 掩码按 button 查表，middle=4）
+    seq = cdp_mod.drag_events(0, 0, 10, 10, steps=1, button="middle")
+    pressed = [e for e in seq if e["type"] == "mousePressed"][0]
+    assert pressed["buttons"] == 4 and pressed["button"] == "middle"
+    assert all(e["buttons"] == 4 for e in seq
+               if e["type"] == "mouseMoved" and e is not seq[0])
+
+
+def test_dispatch_insert_text_route(monkeypatch):
+    """insertText 路由锁（审计 P2-3——本批头条修复的回归锁）：
+    insertText 事件必须走**独立命令 Input.insertText**（参数仅 text），
+    不得再进 dispatchKeyEvent（实弹曾报 Unexpected event type）。"""
+    from ashot import cdp as cdp_mod
+    calls = []
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda ws, m, p, timeout=30:
+                        calls.append((m, p)) or {})
+    n, unresolved = cdp_mod.dispatch(
+        "ws://127.0.0.1:1/x", cdp_mod.insert_text_events("表文"))
+    assert n == 1 and unresolved == []
+    assert calls == [("Input.insertText", {"text": "表文"})]
+    # 双击序列路由到 dispatchMouseEvent 且 clickCount 递增
+    calls.clear()
+    seq = cdp_mod.dblclick_events(5, 6, count=2)
+    n, _ = cdp_mod.dispatch("ws://127.0.0.1:1/x", seq)
+    assert n == 5
+    assert all(m == "Input.dispatchMouseEvent" for m, _ in calls)
+    ccs = [p["clickCount"] for _, p in calls if p["type"] == "mousePressed"]
+    assert ccs == [1, 2]
+
+
+def test_dblclick_and_insert_text():
+    """v0.2.3：双击=clickCount 递增序列（浏览器据此合成 dblclick）；
+    insertText=粘贴式填表（不逐键击）。"""
+    from ashot import cdp as cdp_mod
+    seq = cdp_mod.dblclick_events(50, 60)
+    types = [e["type"] for e in seq]
+    assert types == ["mouseMoved", "mousePressed", "mouseReleased",
+                     "mousePressed", "mouseReleased"]
+    assert seq[1]["clickCount"] == 1 and seq[2]["clickCount"] == 1
+    assert seq[3]["clickCount"] == 2 and seq[4]["clickCount"] == 2
+    seq = cdp_mod.dblclick_events(0, 0, count=3)
+    assert sum(1 for e in seq if e["type"] == "mousePressed") == 3
+    # insertText：粘贴式单事件，text 整段携带
+    seq = cdp_mod.insert_text_events("多行文本\n第二行")
+    assert len(seq) == 1
+    assert seq[0]["type"] == "insertText"
+    assert seq[0]["text"] == "多行文本\n第二行"
 
 
 def test_cdp_dispatch_with_stub():

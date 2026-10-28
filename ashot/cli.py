@@ -211,6 +211,48 @@ def _cmd_cdp_drag(a):
         return 1
 
 
+def _cmd_cdp_dblclick(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        seq = cdp.dblclick_events(a.x, a.y, button=a.button,
+                                  count=a.count)
+        n, _ = cdp.dispatch(ws, seq)
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_cdp_type(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        # 聚焦前置：click 到目标坐标（若指定），再 insertText 整段输入
+        if (a.x is None) != (a.y is None):
+            print("✗ --x 与 --y 需成对给出（只给其一时无法聚焦）",
+                  file=sys.stderr)
+            return 1
+        seq = ([{"type": "mouseMoved", "x": a.x, "y": a.y,
+                 "modifiers": 0},
+                {"type": "mousePressed", "x": a.x, "y": a.y,
+                 "button": "left", "buttons": 1, "clickCount": 1,
+                 "modifiers": 0},
+                {"type": "mouseReleased", "x": a.x, "y": a.y,
+                 "button": "left", "buttons": 0, "clickCount": 1,
+                 "modifiers": 0}] if a.x is not None else []) + \
+            cdp.insert_text_events(a.text)
+        n, _ = cdp.dispatch(ws, seq)
+        print("dispatched: %d" % n)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_screens(_a):
     try:
         for sc in capture.list_screens():
@@ -332,6 +374,24 @@ def main(argv=None):
                     choices=["left", "right", "middle"], help="键")
     _add_common(cd)
     cd.set_defaults(func=_cmd_cdp_drag)
+
+    cb = sub.add_parser("cdp-dblclick", help="CDP 鼠标双击/多击（v0.2.3）")
+    cb.add_argument("x", type=int, help="双击 x（CSS 像素）")
+    cb.add_argument("y", type=int, help="双击 y")
+    cb.add_argument("--button", default="left",
+                    choices=["left", "right", "middle"], help="键")
+    cb.add_argument("--count", type=int, default=2,
+                    help="点击数（2=双击，3=三连击）")
+    _add_common(cb)
+    cb.set_defaults(func=_cmd_cdp_dblclick)
+
+    ct2 = sub.add_parser("cdp-type", help="CDP 整段文本输入（填表，粘贴式不逐键，v0.2.3）")
+    ct2.add_argument("text", help="整段文本（Input.insertText，不触发每键 keydown）")
+    ct2.add_argument("--x", type=int, default=None,
+                     help="可选：先点击该坐标聚焦输入框再输入")
+    ct2.add_argument("--y", type=int, default=None, help="点击 y")
+    _add_common(ct2)
+    ct2.set_defaults(func=_cmd_cdp_type)
 
     a = ap.parse_args(argv)
     return a.func(a)

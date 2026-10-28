@@ -64,12 +64,17 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   浏览器）；--port 缺省自动发现（进程枚举→DevToolsActivePort→常见
   端口）；cdp-shot 缺省 captureBeyondViewport 全页。Chrome 136+ 默认
   profile 拒远程调试——浏览器须用非默认 --user-data-dir 启动。
-- **CDP 输入注入**（v0.2.1）：`cdp-key <键> [--modifiers ctrl+shift]
-  [--text T]`（回车/Tab/方向键/组合快捷键/字符，rawKeyDown+char 双
-  发）、`cdp-wheel --dx --dy`（滚轮）、`cdp-click x y [--button]`、
-  `cdp-drag x1 y1 x2 y2 [--steps]`——全部 --port/--index/--ws 同
-  cdp-shot。注入的是 CDP isTrusted 事件（页面无法区分），需目标
-  标签页持焦点。
+- **CDP 输入注入**（v0.2.1/0.2.3）：`cdp-key <键> [--modifiers ctrl+shift]
+  [--text T]`（回车/Tab/方向键/F1-F12/符号/任意字符/组合快捷键，
+  rawKeyDown+char 双发；未知键收据 unresolved_keys 亮牌）、
+  `cdp-wheel --dx --dy`（滚轮）、`cdp-click x y [--button]`（单击，
+  left/right/middle）、`cdp-dblclick x y [--count]`（双击/三连击）、
+  `cdp-drag x1 y1 x2 y2 [--steps]`（拖拽）、`cdp-type <文本> [--x --y]`
+  （**填表整段输入**，Input.insertText 粘贴式含中文，不逐键击）——
+  全部 --port/--index/--ws 同 cdp-shot。注入的是 CDP isTrusted 事件
+  （页面无法区分），**只进指定标签页、不占用户物理键鼠**（自动化与
+  用户操作天然隔离）；insertText 落点=目标标签页当前焦点元素
+  （--x/--y 先点击聚焦）。
 - `screens`——列出显示器（非 Windows 平台如实报「批2」）。
 
 ## MCP（ashot 域名，宿主注册后可用）

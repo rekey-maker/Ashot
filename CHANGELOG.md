@@ -2,6 +2,29 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.3] - 2026-10-28
+
+### 新增（批1 追加：双击/多击 + 填表整段输入，用户需求）
+- **`cdp-dblclick x y [--button] [--count N]`**：clickCount 递增序列
+  （浏览器据此合成 dblclick；count=3 三连击）；MCP 第 12 工具
+  `ashot_cdp_dblclick`
+- **`cdp-type <文本> [--x --y]`**：Input.insertText 粘贴式填表（不逐
+  键击、不触发每键 keydown，含多行/中文）；x/y 可选先点击聚焦；MCP
+  第 13 工具 `ashot_cdp_type`
+- **隔离语义入档**：CDP 事件只进指定标签页、不占用户物理键鼠——
+  自动化与用户操作天然不冲突
+- **buttons 位掩码修正**（子 agent 审计 P2-1，顺带治好 v0.2.0 起的
+  click/drag 旧病）：按下掩码按 button 查表（left=1/right=2/
+  middle=4，Playwright 同款）——中键/右键按下时页面 e.buttons 不再
+  矛盾
+- 修复 insertText 路由（实弹抓到：它不是 dispatchKeyEvent 的事件
+  类型，是独立命令 Input.insertText；删 VK229 前置占位）；CLI
+  cdp-type --x/--y 成对守卫（审计 P2-2）；审计 P2-3 补路由锁测试
+  （insertText 走独立命令 + dblclick clickCount 递增，monkeypatch
+  零网络）
+- 实弹 headless Edge：insertText 含中文整段进 input（value="hello
+  填表"）；测试 67→69
+
 ## [0.2.2] - 2026-10-28
 
 ### 修复（键盘覆盖补全批，用户问「所有键盘按键都支持了？」→诚实答未全→补上）
