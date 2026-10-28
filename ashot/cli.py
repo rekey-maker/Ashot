@@ -216,7 +216,7 @@ def _cmd_cdp_shot(a):
         print("fullpage: %s" % meta["fullpage"], file=sys.stderr)
         for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
                   "scroll_y", "fullpage_truncated", "stitched", "shots",
-                  "stitch_error"):
+                  "stitch_error", "fixed_hidden"):
             if k in meta:
                 print("%s: %s" % (k, meta[k]), file=sys.stderr)
         if meta.get("hint"):

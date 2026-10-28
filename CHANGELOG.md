@@ -2,6 +2,25 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.2.8] - 2026-10-29
+
+### 新增 / 修复（v0.2.7 原语的三个欠账）
+- **跨站 OOPIF iframe 映射**：`Page.createIsolatedWorld` 对跨站 frame 报
+  "No frame for given id found"（实测）——改用
+  `Target.getTargets` 找 type=iframe 且 targetId==frameId 的 target →
+  `Target.attachToTarget(flatten)` → 命令带 `sessionId` 直达该进程求值
+  （`Session.command` 新增 session_id）。实测 example.com iframe：body
+  (100,80,400,756) 被 iframe 裁到 visible_ratio=0.397、p (132,171) 命中，
+  收据带 `oopif:true`。
+- **frame 内元素可见比例修正**：之前 `visible_ratio` 只按子 frame 视口算，
+  iframe 外的部分会被算成"可见"。现在与「主视口 ∩ 每层 iframe 内容框」
+  求交，新增 `clipped_by_frame`；iframe 外的点击会先被这一步拦下。
+- **拼接隐藏 fixed/sticky**：吸顶栏逐屏重复的老毛病——拼接前
+  `visibility:hidden`（保留布局），拍完还原；收据带 `fixed_hidden:N`。
+
+### 测试
+- 111 项全绿（新增 3：OOPIF attach 映射、可见比例裁剪、fixed 隐藏/还原）。
+
 ## [0.2.7] - 2026-10-29
 
 ### 新增（三个通用原语；**不是验证码模块**）

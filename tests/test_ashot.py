@@ -2419,7 +2419,7 @@ def test_dom_cross_origin_frame_map(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def command(self, method, params=None):
+        def command(self, method, params=None, session_id=None):
             if method == "Runtime.evaluate":
                 if params.get("contextId") == 5:
                     return {"result": {"value": inner}}
@@ -2462,9 +2462,11 @@ def test_dom_oopif_reports_unsupported(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def command(self, method, params=None):
+        def command(self, method, params=None, session_id=None):
             if method == "Page.createIsolatedWorld":
                 raise RuntimeError("target detached / OOPIF")
+            if method == "Target.getTargets":
+                return {"targetInfos": []}
             return {
                 "DOM.enable": {},
                 "DOM.getDocument": {"root": {"nodeId": 1}},
@@ -2481,6 +2483,56 @@ def test_dom_oopif_reports_unsupported(monkeypatch):
     with _pytest.raises(RuntimeError) as ei:
         dom.frame_element_rect("ws://x", "#f", "#inner")
     assert "oopif_unsupported" in str(ei.value)
+
+
+def test_dom_oopif_attach_maps(monkeypatch):
+    """跨站 OOPIF：createIsolatedWorld 失败 → Target.attachToTarget（flatten）
+    → 带 sessionId 求值 → 与 iframe 内容原点相加。"""
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+
+    class FakeSession:
+        def __init__(self, ws, timeout=30):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def command(self, method, params=None, session_id=None):
+            if method == "Page.createIsolatedWorld":
+                raise RuntimeError("No frame for given id found")
+            if method == "Target.getTargets":
+                return {"targetInfos": [{"type": "iframe", "targetId": "F2",
+                                         "url": "https://example.com/"}]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S1"}
+            if method == "Runtime.evaluate" and session_id == "S1":
+                return {"result": {"value": {"found": True, "local_x": 5,
+                                             "local_y": 6, "w": 10, "h": 10}}}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": {"found": False,
+                                             "cross_origin": True}}}
+            return {
+                "DOM.enable": {},
+                "DOM.getDocument": {"root": {"nodeId": 1}},
+                "DOM.querySelector": {"nodeId": 7},
+                "DOM.describeNode": {"node": {"frameId": "F2"}},
+                "DOM.getBoxModel": {"model": {"content": [100, 200, 300, 200,
+                                                          300, 300, 100, 300]}},
+                "Target.detachFromTarget": {},
+            }[method]
+
+    monkeypatch.setattr(cdp_mod, "Session", FakeSession)
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": {"found": False,
+                                                             "cross_origin": True}}})
+    rec = dom.frame_element_rect("ws://x", "#f", "#inner")
+    assert rec["oopif"] is True
+    assert rec["x"] == 105 and rec["y"] == 206
+    assert rec["cx"] == 110 and rec["cy"] == 211
 
 
 def test_dom_frames_flat(monkeypatch):
@@ -2535,3 +2587,39 @@ def test_cli_hash_and_diff(tmp_path):
     assert r.returncode == 0, r.stderr
     rec = json.loads(r.stdout)
     assert rec["same"] is False and rec["changed_px"] == 9
+
+def test_clip_to_visible_v028(monkeypatch):
+    """frame 内元素：与主视口/iframe 内容框求交，别把 iframe 外算成可见。"""
+    from ashot import dom
+    monkeypatch.setattr(dom, "_eval_raw",
+                        lambda *a, **k: {"vw": 1000, "vh": 700})
+    rec = {"x": 900, "y": 100, "w": 200, "h": 50}
+    out = dom._clip_to_visible("ws", dict(rec), [], 5)
+    assert out["visible_ratio"] == 0.5 and out["clipped_by_frame"] is True
+    assert out["in_viewport"] is True
+
+    rec2 = {"x": 0, "y": 0, "w": 100, "h": 100}
+    chain = [{"content_x": 0, "content_y": 0, "content_w": 50, "content_h": 50}]
+    out2 = dom._clip_to_visible("ws", dict(rec2), chain, 5)
+    assert out2["visible_ratio"] == 0.25
+    assert out2["clipped_by_frame"] is True
+
+
+def test_hide_fixed_elements_v028(monkeypatch):
+    """拼接前隐藏 fixed/sticky，拍完还原（v0.2.8）。"""
+    from ashot import cdp as cdp_mod
+    seen = []
+
+    def fake_call(ws, method, params=None, timeout=10):
+        expr = params.get("expression", "")
+        seen.append(expr)
+        if "position" in expr:
+            return {"result": {"value": 3}}
+        return {"result": {"value": 3}}
+
+    monkeypatch.setattr(cdp_mod, "call", fake_call)
+    n = cdp_mod._hide_fixed("ws://x")
+    assert n == 3
+    assert "fixed" in seen[0] and "sticky" in seen[0] and "data-ashot-vis" in seen[0]
+    cdp_mod._restore_fixed("ws://x")
+    assert "data-ashot-vis" in seen[1] and "removeAttribute" in seen[1]

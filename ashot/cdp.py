@@ -432,12 +432,17 @@ class Session(object):
         self._id = 0
         self.timeout = timeout
 
-    def command(self, method, params=None):
-        """发一条命令并等它自己的应答（id 递增，事件帧跳过）。"""
+    def command(self, method, params=None, session_id=None):
+        """发一条命令并等它自己的应答（id 递增，事件帧跳过）。
+
+        session_id（v0.2.8）：flatten 会话——`Target.attachToTarget` 拿到
+        sessionId 后，后续命令带它就能直达 OOPIF 子 target（跨站 iframe）。"""
         self._id += 1
         mid = self._id
-        _send_frame(self.sock, 0x1, json.dumps(
-            {"id": mid, "method": method, "params": params or {}}).encode())
+        msg = {"id": mid, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        _send_frame(self.sock, 0x1, json.dumps(msg).encode())
         # buf 线穿（审计 P1-1）：握手 rest 与每轮余 buf 必须传回——
         # 服务端有权把事件帧与应答帧合并在一个 TCP 段，丢弃即丢应答
         while True:
@@ -1164,6 +1169,49 @@ def _scroll_to(ws, y, timeout=5):
     return float(got or 0)
 
 
+_HIDE_FIXED_JS = """
+(() => {
+  const els = [...document.querySelectorAll('*')].filter(e => {
+    const p = getComputedStyle(e).position;
+    return p === 'fixed' || p === 'sticky';
+  });
+  els.forEach(e => {
+    e.setAttribute('data-ashot-vis', e.style.visibility || '');
+    e.style.visibility = 'hidden';
+  });
+  return els.length;
+})()
+"""
+
+_RESTORE_FIXED_JS = """
+(() => {
+  const els = [...document.querySelectorAll('[data-ashot-vis]')];
+  els.forEach(e => { e.style.visibility = e.getAttribute('data-ashot-vis') || ''; });
+  els.forEach(e => e.removeAttribute('data-ashot-vis'));
+  return els.length;
+})()
+"""
+
+
+def _hide_fixed(ws, timeout=10):
+    """拼接前隐藏 fixed/sticky（v0.2.8）：吸顶栏逐屏重复是拼接的老毛病，
+    用 visibility:hidden 藏（保留布局，不跳版）；拍完 must 还原。"""
+    try:
+        res = call(ws, "Runtime.evaluate",
+                   {"expression": _HIDE_FIXED_JS, "returnByValue": True}, timeout)
+        return int((res.get("result") or {}).get("value") or 0)
+    except Exception:  # noqa: BLE001 —— 隐藏失败不影响截图，但会少一层质量
+        return -1
+
+
+def _restore_fixed(ws, timeout=10):
+    try:
+        call(ws, "Runtime.evaluate",
+             {"expression": _RESTORE_FIXED_JS, "returnByValue": True}, timeout)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):
     """滚动 + 拼接整页截图（v0.2.6，超长页兜底）。
 
@@ -1188,6 +1236,7 @@ def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):
     shots = []
     W = 0
     prev_actual = -1.0
+    hidden = _hide_fixed(ws, timeout)   # 隐藏吸顶栏，避免逐屏重复
     try:
         y = 0.0
         while y < total_css - 0.5:
@@ -1228,11 +1277,14 @@ def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):
             _scroll_to(ws, orig, timeout)   # 复原用户滚动位置
         except Exception:  # noqa: BLE001
             pass
+        if hidden and hidden > 0:
+            _restore_fixed(ws, timeout)
     info = {"fullpage": True, "w": W, "h": H,
             "vw": int(lay.get("vw") or 0), "vh": vh,
             "dpr": scale, "to_css": round(1.0 / scale, 4),
             "coord_space": "document", "scroll_y": orig,
             "stitched": True, "shots": len(shots),
+            "fixed_hidden": max(0, hidden),
             "content_h_css": round(total_css, 1),
             "hint": ("滚动拼接：%d 张视口图拼成整页（文档坐标；点击坐标 = "
                      "文档坐标 − scrollY）。固定定位元素会在每段重复。"

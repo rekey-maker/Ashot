@@ -265,7 +265,7 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
     rec = {"ok": True, "path": path}
     for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
               "scroll_y", "hint", "fullpage", "fullpage_truncated",
-              "stitched", "shots", "stitch_error"):
+              "stitched", "shots", "stitch_error", "fixed_hidden"):
         if k in info:
             rec[k] = info[k]
     if as_bool(preview):

@@ -127,8 +127,10 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   **坐标可直接喂 cdp-click**；截图坐标要先 × to_css，别混用。
 - `frames`——frame 树（id/url/parent/depth）+ 能取到的 iframe 矩形。
 - `frame-element <iframe选择器|JSON数组> <选择器>`——iframe 内元素 →
-  主页面视口坐标；同源任意深度、跨域同进程可用；跨站 OOPIF 会如实报
-  `oopif_unsupported`。
+  主页面视口坐标；同源任意深度、跨域同进程、**跨站 OOPIF**（Target
+  flatten 会话）都可用，收据带 `cross_origin`/`oopif`；可见比例已与
+  「主视口 ∩ iframe 内容框」求交（`clipped_by_frame`），iframe 外不会
+  被算成可见。
 - 典型用法（不涉及验证码）：`element` 拿按钮中心 → `cdp-click` 点它 →
   `cdp-eval 'return ...'` 验证；`hash` 前后对比判断页面变没变。
 

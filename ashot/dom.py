@@ -72,7 +72,10 @@ _SAME_ORIGIN_JS = r"""
     if (!f) return {found:false, error:"iframe not found: " + sel, chain};
     const fr = f.getBoundingClientRect();
     chain.push({selector: sel, cross_origin: false,
-                x: fr.left, y: fr.top, w: fr.width, h: fr.height});
+                x: fr.left, y: fr.top, w: fr.width, h: fr.height,
+                content_x: fr.left + (f.clientLeft || 0),
+                content_y: fr.top + (f.clientTop || 0),
+                content_w: f.clientWidth, content_h: f.clientHeight});
     offX += fr.left + (f.clientLeft || 0);
     offY += fr.top + (f.clientTop || 0);
     let cd = null;
@@ -136,6 +139,43 @@ def _eval_raw(ws, expression, timeout=15, context_id=None, await_promise=False):
     return (res.get("result") or {}).get("value")
 
 
+def _intersect(a, b):
+    """矩形交集 -> (x, y, w, h)（无交集返回 0 宽高）。"""
+    x0 = max(a[0], b[0])
+    y0 = max(a[1], b[1])
+    x1 = min(a[0] + a[2], b[0] + b[2])
+    y1 = min(a[1] + a[3], b[1] + b[3])
+    return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
+
+def _clip_to_visible(ws, rec, containers, timeout=15):
+    """把 frame 内元素的页面矩形与「主视口 ∩ 各层 iframe 内容框」求交，
+    重算 in_viewport/visible_ratio（v0.2.8）——否则 iframe 外的部分被
+    算成"可见"，点上去会打到别的元素。"""
+    try:
+        vp = _eval_raw(ws, "(() => ({vw: innerWidth, vh: innerHeight}))()",
+                       timeout) or {}
+    except Exception:  # noqa: BLE001
+        vp = {}
+    vw, vh = float(vp.get("vw") or 0), float(vp.get("vh") or 0)
+    if vw <= 0 or vh <= 0:
+        return rec
+    clip = (0.0, 0.0, vw, vh)
+    for c in containers or []:
+        cx = c.get("content_x", c.get("x", 0))
+        cy = c.get("content_y", c.get("y", 0))
+        cw = c.get("content_w", c.get("w", 0))
+        ch = c.get("content_h", c.get("h", 0))
+        clip = _intersect(clip, (float(cx), float(cy), float(cw), float(ch)))
+    ix, iy, iw, ih = _intersect((float(rec["x"]), float(rec["y"]),
+                                 float(rec["w"]), float(rec["h"])), clip)
+    area = max(1.0, float(rec["w"]) * float(rec["h"]))
+    rec["visible_ratio"] = round(iw * ih / area, 4)
+    rec["in_viewport"] = iw > 0 and ih > 0
+    rec["clipped_by_frame"] = (iw * ih) < area - 0.5
+    return rec
+
+
 def element_rect(ws, selector, scroll=False, timeout=15):
     """元素在**视口**里的 CSS 矩形 + 可见性/视口/遮挡/pointer-events。
 
@@ -180,7 +220,7 @@ def frame_element_rect(ws, iframe_selectors, selector, timeout=15):
     js = _SAME_ORIGIN_JS % (json.dumps(sels), json.dumps(str(selector)))
     out = _eval_raw(ws, js, timeout)
     if out and out.get("found"):
-        return out
+        return _clip_to_visible(ws, out, out.get("frame_chain") or [], timeout)
     # 同源失败：跨域单层走 CDP（嵌套跨站不在本版范围）
     if len(sels) != 1:
         raise RuntimeError("嵌套跨域 iframe 暂不支持（本版只做单层跨域）：%r"
@@ -194,6 +234,33 @@ def frame_element_rect(ws, iframe_selectors, selector, timeout=15):
         raise RuntimeError("跨域 iframe 映射失败（%s: %s）；iframe 链：%r"
                            % (type(e).__name__, str(e)[:160],
                               (out or {}).get("chain")))
+
+
+def _attach_oopif(s, frame_id):
+    """跨站 iframe（OOPIF）：target id 实测等于 frameId；attach 成 flatten
+    会话后命令带 sessionId 直达该进程。找不到/attach 失败返回 None。"""
+    try:
+        tg = s.command("Target.getTargets")
+    except Exception:  # noqa: BLE001
+        return None
+    infos = tg.get("targetInfos") or []
+    tid = None
+    for t in infos:
+        if t.get("type") == "iframe" and t.get("targetId") == frame_id:
+            tid = t["targetId"]
+            break
+    if not tid:
+        cands = [t for t in infos if t.get("type") == "iframe"]
+        if len(cands) == 1:   # 只有一个 iframe target 时允许兜底
+            tid = cands[0]["targetId"]
+    if not tid:
+        return None
+    try:
+        r = s.command("Target.attachToTarget",
+                      {"targetId": tid, "flatten": True})
+        return r.get("sessionId")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
@@ -221,19 +288,33 @@ def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
         ox, oy = content[0], content[1]
         if not frame_id:
             raise RuntimeError("iframe 没有独立 frameId（同源？CDP 分支不适用）")
+        expr = ("(() => { const doc = document, win = window;"
+                + (_RECT_BODY % json.dumps(str(selector))) + "})()")
+        oopif = False
         try:
             w = s.command("Page.createIsolatedWorld",
                           {"frameId": frame_id, "worldName": "ashot-dom"})
             ctx = w.get("executionContextId")
-        except Exception as e:  # noqa: BLE001 —— OOPIF 典型症状
-            raise RuntimeError(
-                "oopif_unsupported：该 iframe 是跨站进程隔离帧，需要 Target 会话；"
-                "iframe 矩形=%r（%s）" % (chain_hint or [ox, oy], str(e)[:120]))
-        res = s.command("Runtime.evaluate", {
-            "contextId": int(ctx), "returnByValue": True, "userGesture": True,
-            "expression": "(() => { const doc = document, win = window;"
-                          + (_RECT_BODY % json.dumps(str(selector)))
-                          + "})()"})
+            res = s.command("Runtime.evaluate", {
+                "contextId": int(ctx), "returnByValue": True,
+                "userGesture": True, "expression": expr})
+        except Exception as e:  # noqa: BLE001 —— 跨站 OOPIF：frame 不在本进程
+            sid = _attach_oopif(s, frame_id)
+            if not sid:
+                raise RuntimeError(
+                    "oopif_unsupported：该 iframe 是跨站进程隔离帧，且 target "
+                    "attach 失败；iframe 矩形=%r（%s）"
+                    % (chain_hint or [ox, oy], str(e)[:120]))
+            try:
+                res = s.command("Runtime.evaluate", {
+                    "returnByValue": True, "userGesture": True,
+                    "expression": expr}, session_id=sid)
+                oopif = True
+            finally:
+                try:
+                    s.command("Target.detachFromTarget", {"sessionId": sid})
+                except Exception:  # noqa: BLE001
+                    pass
         exc = res.get("exceptionDetails")
         if exc:
             raise RuntimeError("跨域 frame 求值异常：%s"
@@ -246,9 +327,16 @@ def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
     out["cx"] = out["x"] + out["w"] / 2.0
     out["cy"] = out["y"] + out["h"] / 2.0
     out["cross_origin"] = True
-    out["frame_chain"] = [{"selector": iframe_selector, "cross_origin": True,
-                           "x": ox, "y": oy}]
-    return out
+    if oopif:
+        out["oopif"] = True
+    chain = [{"selector": iframe_selector, "cross_origin": True,
+              "x": ox, "y": oy, "w": content[2] - content[0],
+              "h": content[7] - content[1],
+              "content_x": ox, "content_y": oy,
+              "content_w": content[2] - content[0],
+              "content_h": content[7] - content[1]}]
+    out["frame_chain"] = chain
+    return _clip_to_visible(ws, out, chain, timeout)
 
 
 def frames(ws, timeout=15):

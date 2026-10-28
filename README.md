@@ -34,7 +34,7 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
 - **通用原语**（v0.2.7，非验证码专用）：**图像指纹/差异**（sha256 +
   dHash/aHash + YIQ 差异/bbox/差异图）、**元素矩形+可见性**（视口 CSS
   像素、checkVisibility、视口交集、中心遮挡、pointer-events）、
-  **iframe 坐标映射**（同源任意深度、跨域同进程；OOPIF 如实报不支持）
+  **iframe 坐标映射**（同源任意深度、跨域同进程、跨站 OOPIF；可见比例按 iframe 边界裁剪）
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
 - **MCP**：stdio JSON-RPC 2.0，十五工具 `ashot_shot` / `ashot_annotate` /
