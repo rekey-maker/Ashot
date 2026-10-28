@@ -424,6 +424,14 @@ def test_mcp_tool_schemas():
                                   "ashot_cdp_wheel", "ashot_cdp_click",
                                   "ashot_cdp_drag", "ashot_cdp_dblclick",
                                   "ashot_cdp_type"}
+    for nm, props in (
+            ("ashot_cdp_click", {"x", "y", "button", "human", "seed",
+                                 "port", "index", "ws"}),
+            ("ashot_cdp_drag", {"x1", "y1", "x2", "y2", "steps", "button",
+                                "human", "seed", "port", "index", "ws"}),
+            ("ashot_cdp_dblclick", {"x", "y", "button", "count", "human",
+                                    "seed", "port", "index", "ws"})):
+        assert set(mcp_mod.TOOLS[nm]["inputSchema"]["properties"]) == props, nm
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
@@ -446,8 +454,8 @@ def test_mcp_tool_schemas():
     assert set(cs["properties"]) == {"port", "index", "fullpage", "out"}
     db = mcp_mod.TOOLS["ashot_cdp_dblclick"]["inputSchema"]
     assert db["required"] == ["x", "y"]
-    assert set(db["properties"]) == {"x", "y", "button", "count",
-                                     "port", "index", "ws"}
+    assert set(db["properties"]) == {"x", "y", "button", "count", "human",
+                                     "seed", "port", "index", "ws"}
     tp = mcp_mod.TOOLS["ashot_cdp_type"]["inputSchema"]
     assert tp["required"] == ["text"]
     assert set(tp["properties"]) == {"text", "x", "y", "port", "index",
@@ -458,10 +466,10 @@ def test_mcp_tool_schemas():
             ("ashot_cdp_wheel", [],
              {"dx", "dy", "x", "y", "port", "index", "ws"}),
             ("ashot_cdp_click", ["x", "y"],
-             {"x", "y", "button", "port", "index", "ws"}),
+             {"x", "y", "button", "human", "seed", "port", "index", "ws"}),
             ("ashot_cdp_drag", ["x1", "y1", "x2", "y2"],
-             {"x1", "y1", "x2", "y2", "steps", "button", "port", "index",
-              "ws"})):
+             {"x1", "y1", "x2", "y2", "steps", "button", "human", "seed",
+              "port", "index", "ws"})):
         ic = mcp_mod.TOOLS[nm]["inputSchema"]
         assert ic["required"] == req, (nm, ic["required"])
         assert set(ic["properties"]) == props, nm
@@ -1254,25 +1262,52 @@ def test_dispatch_strips_unresolved(monkeypatch):
 
 
 def test_drag_events_sequence():
-    """拖拽序列（审计 §4.2.2）：moved(起始) → pressed → 插值 moved×N
-    （buttons=1）→ released（buttons=0）。"""
+    """拖拽序列（v0.2.4 human=True 缺省）：moved(起始) → pressed →
+    人类化轨迹 moved（buttons=press 掩码）→ released。"""
     from ashot import cdp as cdp_mod
-    seq = cdp_mod.drag_events(10, 10, 110, 60, steps=4)
+    seq = cdp_mod.drag_events(10, 10, 110, 60, steps=4, seed=7)
     types = [e["type"] for e in seq]
-    assert types == ["mouseMoved", "mousePressed",
-                     "mouseMoved", "mouseMoved", "mouseMoved", "mouseMoved",
-                     "mouseReleased"]
-    assert seq[2]["x"] == 35 and seq[2]["y"] == 22.5   # 插值 1/4
-    for e in seq[2:6]:
-        assert e["buttons"] == 1
-    assert seq[-1]["buttons"] == 0
-    assert seq[-1]["x"] == 110 and seq[-1]["y"] == 60
+    assert types.count("mousePressed") == 1
+    assert types[-1] == "mouseReleased"
+    moved = [e for e in seq if e["type"] == "mouseMoved"]
+    assert len(moved) >= 5   # 起始 + 轨迹
+    # 人类化轨迹：中段点偏离直线（贝塞尔+抖动），但终点精确
+    def off_line(e):
+        # 直线 y = 10 + (x-10)*0.5
+        return abs(e["y"] - (10 + (e["x"] - 10) * 0.5))
+    assert any(off_line(e) > 1.0 for e in moved[1:-1]), "轨迹毫无弧度"
+    assert moved[-1]["x"] == 110 and moved[-1]["y"] == 60, "终点未精确落点"
+    pressed = [e for e in seq if e["type"] == "mousePressed"][0]
+    assert pressed["buttons"] == 1
     # 中键拖拽 buttons 位（审计 P2-1：press 掩码按 button 查表，middle=4）
     seq = cdp_mod.drag_events(0, 0, 10, 10, steps=1, button="middle")
     pressed = [e for e in seq if e["type"] == "mousePressed"][0]
     assert pressed["buttons"] == 4 and pressed["button"] == "middle"
-    assert all(e["buttons"] == 4 for e in seq
-               if e["type"] == "mouseMoved" and e is not seq[0])
+    # teleport 逃生门：直线插值旧行为
+    seq = cdp_mod.drag_events(0, 0, 40, 30, steps=2, human=False)
+    moved = [e for e in seq if e["type"] == "mouseMoved"]
+    assert [(e["x"], e["y"]) for e in moved[1:]] == [(20, 15), (40, 30)]
+
+
+def test_human_move_events_determinism():
+    """人类化轨迹纯函数锁：seed 确定性、首尾精确、步数自适应边界、
+    抖动 fade（首尾无抖动）。"""
+    from ashot import cdp as cdp_mod
+    a = cdp_mod.human_move_events(0, 0, 500, 400, seed=42)
+    b = cdp_mod.human_move_events(0, 0, 500, 400, seed=42)
+    assert a == b, "同 seed 轨迹不同"
+    c = cdp_mod.human_move_events(0, 0, 500, 400, seed=43)
+    assert a != c, "不同 seed 轨迹相同"
+    assert a[0] == (500, 400) is not None or a[-1] == (500, 400)
+    assert a[-1] == (500.0, 400.0), "终点带抖动"
+    # 步数自适应：距离 640 → ~25 步（min(28, 640/25=25)）
+    assert 20 <= len(a) <= 30, len(a)
+    # 短距离：dist<25 → 8 步下限
+    short = cdp_mod.human_move_events(0, 0, 20, 0, seed=1)
+    assert len(short) == 8
+    # 抖动=0：轨迹应是纯贝塞尔（仍非直线，但可复现）
+    j0 = cdp_mod.human_move_events(0, 0, 500, 400, jitter=0, seed=9)
+    assert j0[-1] == (500.0, 400.0)
 
 
 def test_dispatch_insert_text_route(monkeypatch):
@@ -1288,9 +1323,10 @@ def test_dispatch_insert_text_route(monkeypatch):
         "ws://127.0.0.1:1/x", cdp_mod.insert_text_events("表文"))
     assert n == 1 and unresolved == []
     assert calls == [("Input.insertText", {"text": "表文"})]
-    # 双击序列路由到 dispatchMouseEvent 且 clickCount 递增
+    # 双击序列路由到 dispatchMouseEvent 且 clickCount 递增（human=False
+    # 固定事件数=5，便于断言；human 轨迹事件数随距离自适应）
     calls.clear()
-    seq = cdp_mod.dblclick_events(5, 6, count=2)
+    seq = cdp_mod.dblclick_events(5, 6, count=2, human=False)
     n, _ = cdp_mod.dispatch("ws://127.0.0.1:1/x", seq)
     assert n == 5
     assert all(m == "Input.dispatchMouseEvent" for m, _ in calls)
@@ -1299,16 +1335,21 @@ def test_dispatch_insert_text_route(monkeypatch):
 
 
 def test_dblclick_and_insert_text():
-    """v0.2.3：双击=clickCount 递增序列（浏览器据此合成 dblclick）；
-    insertText=粘贴式填表（不逐键击）。"""
+    """v0.2.3/0.2.4：双击=human 轨迹到位 + clickCount 递增序列（浏览器
+    据此合成 dblclick）；insertText=粘贴式填表（不逐键击）。"""
     from ashot import cdp as cdp_mod
-    seq = cdp_mod.dblclick_events(50, 60)
+    seq = cdp_mod.dblclick_events(50, 60, human=False)
     types = [e["type"] for e in seq]
     assert types == ["mouseMoved", "mousePressed", "mouseReleased",
                      "mousePressed", "mouseReleased"]
     assert seq[1]["clickCount"] == 1 and seq[2]["clickCount"] == 1
     assert seq[3]["clickCount"] == 2 and seq[4]["clickCount"] == 2
-    seq = cdp_mod.dblclick_events(0, 0, count=3)
+    # human=True：前面多出人类化 moved 序列，clickCount 语义不变
+    seq = cdp_mod.dblclick_events(50, 60, human=True, seed=5)
+    presses = [e for e in seq if e["type"] == "mousePressed"]
+    assert [e["clickCount"] for e in presses] == [1, 2]
+    assert seq[0]["type"] == "mouseMoved" and len(seq) > 5
+    seq = cdp_mod.dblclick_events(0, 0, count=3, human=False)
     assert sum(1 for e in seq if e["type"] == "mousePressed") == 3
     # insertText：粘贴式单事件，text 整段携带
     seq = cdp_mod.insert_text_events("多行文本\n第二行")

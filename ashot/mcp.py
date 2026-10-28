@@ -230,40 +230,49 @@ def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
-def _cdp_click(x, y, button="left", port=None, index=0, ws=None):
-    """CDP 鼠标单击（v0.2.0）：x/y=CSS 像素；button=left/right/middle。
-    mousePressed+mouseReleased 序列。返回 {ok, dispatched}。需宿主
+def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
+               index=0, ws=None):
+    """CDP 鼠标单击（v0.2.0/0.2.4）：x/y=CSS 像素；button=left/right/
+    middle；human=True（缺省）先沿人类化贝塞尔轨迹移动到位（比人快、
+    带微抖动），--teleport/teleport=False 退回瞬移。返回
+    {ok, dispatched}。需宿主重连出现。"""
+    ws_url = ws or _resolve_cdp(port, index)
+    seq = cdp.click_events(int(x), int(y), button=button,
+                           human=human not in (False, "false", "False",
+                                               "0"),
+                           seed=int(seed) if seed not in (None, "") else None)
+    n, _ = cdp.dispatch(ws_url, seq)
+    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+
+
+def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
+              seed=None, port=None, index=0, ws=None):
+    """CDP 鼠标拖拽（v0.2.4）：按下 → **人类化贝塞尔+抖动轨迹** →
+    释放；human=False 退回直线插值。返回 {ok, dispatched}。需宿主
     重连出现。"""
     ws_url = ws or _resolve_cdp(port, index)
-    seq = [{"type": "mouseMoved", "x": int(x), "y": int(y), "modifiers": 0},
-           {"type": "mousePressed", "x": int(x), "y": int(y),
-            "button": button, "buttons": 1, "clickCount": 1,
-            "modifiers": 0},
-           {"type": "mouseReleased", "x": int(x), "y": int(y),
-            "button": button, "buttons": 0, "clickCount": 1,
-            "modifiers": 0}]
+    seq = cdp.drag_events(x1, y1, x2, y2,
+                          steps=int(steps) if steps not in (None, "",
+                                                            0) else 0,
+                          button=button,
+                          human=human not in (False, "false", "False",
+                                              "0"),
+                          seed=int(seed) if seed not in (None, "") else None)
     n, _ = cdp.dispatch(ws_url, seq)
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 
 
-def _cdp_drag(x1, y1, x2, y2, steps=8, button="left", port=None,
-              index=0, ws=None):
-    """CDP 鼠标拖拽（v0.2.0）：按下→插值移动 steps 步→释放。
-    返回 {ok, dispatched}。需宿主重连出现。"""
+def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
+                  port=None, index=0, ws=None):
+    """CDP 双击/多击（v0.2.3/0.2.4）：clickCount 递增序列，浏览器据此
+    合成 dblclick 事件；human=True（缺省）先人类化轨迹到位。x/y=CSS
+    像素。返回 {ok, dispatched}。需宿主重连出现。"""
     ws_url = ws or _resolve_cdp(port, index)
-    seq = cdp.drag_events(x1, y1, x2, y2, steps=int(steps or 8),
-                          button=button)
-    n, _ = cdp.dispatch(ws_url, seq)
-    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
-
-
-def _cdp_dblclick(x, y, button="left", count=2, port=None, index=0,
-                  ws=None):
-    """CDP 双击/多击（v0.2.3）：clickCount 递增序列，浏览器据此合成
-    dblclick 事件。x/y=CSS 像素。返回 {ok, dispatched}。需宿主重连
-    出现。"""
-    ws_url = ws or _resolve_cdp(port, index)
-    seq = cdp.dblclick_events(x, y, button=button, count=int(count or 2))
+    seq = cdp.dblclick_events(x, y, button=button, count=int(count or 2),
+                              human=human not in (False, "false", "False",
+                                                  "0"),
+                              seed=int(seed) if seed not in (None,
+                                                             "") else None)
     n, _ = cdp.dispatch(ws_url, seq)
     return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
 

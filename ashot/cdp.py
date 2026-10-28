@@ -11,7 +11,9 @@
 """
 import base64
 import json
+import math
 import os
+import random
 import re
 import socket
 import struct
@@ -477,39 +479,143 @@ def _press_mask(button):
     return _BUTTON_MASK.get(str(button), 1)
 
 
-def dblclick_events(x, y, button="left", count=2):
-    """双击/多击 = clickCount=count 的 pressed→released→pressed→
-    released（CDP 语义：同一位置快速续击 clickCount 递增，浏览器据此
-    合成 dblclick 事件）。纯函数可单测。"""
-    x, y = float(x), float(y)
-    press = _press_mask(button)
-    seq = [{"type": "mouseMoved", "x": x, "y": y, "modifiers": 0}]
-    for i in range(1, max(2, int(count)) + 1):
+# ---------- 人类化移动轨迹（v0.2.4，设计文档 §4.2.3） ----------
+
+def human_move_events(x1, y1, x2, y2, steps=0, jitter=2.0, seed=None):
+    """人类化鼠标轨迹：三次贝塞尔（随机控制点）+ 缓动速度曲线
+    （慢起-快中-慢收）+ 逐点微抖动（业界反检测共识配方，比人快——
+    无真实延时，CDP 派发间隔由网络决定）。
+
+    steps=0 时按距离自适应（约 8~28 步）；jitter=每点随机偏移幅值
+    （CSS 像素，0 关闭）；seed 可复现（测试用）。首尾精确落点
+    （x2,y2 无抖动——点击必须准）。纯函数可单测。"""
+    x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
+    dist = math.hypot(x2 - x1, y2 - y1)
+    if steps <= 0:
+        steps = max(8, min(28, int(dist / 25)))
+    rnd = random.Random(seed)
+    # 控制点：垂直于连线方向随机偏移（距离的 10%~25%），制造弧线
+    if dist < 1:
+        ctl = [(x2, y2)]
+    else:
+        ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
+        bow = dist * rnd.uniform(0.10, 0.25) * rnd.choice((-1, 1))
+        c1 = (x1 + ux * dist * 0.33 - uy * bow,
+              y1 + uy * dist * 0.33 + ux * bow)
+        c2 = (x1 + ux * dist * 0.66 + uy * bow * 0.6,
+              y1 + uy * dist * 0.66 - ux * bow * 0.6)
+        ctl = [c1, c2]
+    pts = []
+    n_ctl = len(ctl)
+    for i in range(1, steps + 1):
+        t = i / steps
+        # 缓动：ease-in-out（慢起快中慢收）
+        te = t * t * (3 - 2 * t)
+        if n_ctl == 2:
+            u, v = te, 1 - te
+            bx = (x1 * v * v * v + ctl[0][0] * 3 * u * v * v
+                  + ctl[1][0] * 3 * u * u * v + x2 * u * u * u)
+            by = (y1 * v * v * v + ctl[0][1] * 3 * u * v * v
+                  + ctl[1][1] * 3 * u * u * v + y2 * u * u * u)
+        else:
+            bx, by = x2, y2
+        # 抖动：中段大、两端收敛为 0（首尾必须精确落点）
+        if i < steps:
+            fade = math.sin(math.pi * te)   # 0→1→0
+            bx += rnd.uniform(-jitter, jitter) * fade
+            by += rnd.uniform(-jitter, jitter) * fade
+        pts.append((round(bx, 2), round(by, 2)))
+    return pts
+
+
+def move_along(ws_url, x1, y1, x2, y2, steps=0, jitter=2.0, seed=None,
+               buttons=0, timeout=30):
+    """沿人类化轨迹派发 mouseMoved 序列。返回 (派发数, 终点)。"""
+    pts = human_move_events(x1, y1, x2, y2, steps=steps, jitter=jitter,
+                            seed=seed)
+    n = 0
+    for x, y in pts:
+        call(ws_url, "Input.dispatchMouseEvent",
+             {"type": "mouseMoved", "x": x, "y": y,
+              "buttons": int(buttons), "modifiers": 0}, timeout)
+        n += 1
+    return n, pts[-1]
+
+
+def click_events(x, y, button="left", human=True, seed=None):
+    """单击：human=True 先沿人类化轨迹移动到位再按下（v0.2.4）；
+    否则单步 moved（旧行为）。"""
+    seq = []
+    if human:
+        pts = human_move_events(0, 0, x, y, seed=seed)
+        for px, py in pts:
+            seq.append({"type": "mouseMoved", "x": px, "y": py,
+                        "modifiers": 0})
+    else:
+        seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
+    seq.append({"type": "mousePressed", "x": x, "y": y,
+                "button": button, "buttons": _press_mask(button),
+                "clickCount": 1, "modifiers": 0})
+    seq.append({"type": "mouseReleased", "x": x, "y": y,
+                "button": button, "buttons": 0, "clickCount": 1,
+                "modifiers": 0})
+    return seq
+
+
+def dblclick_events(x, y, button="left", count=2, human=True, seed=None):
+    """双击/多击：human=True 先人类化轨迹到位（v0.2.4）；False=单步
+    moved 旧行为。clickCount 递增序列（浏览器据此合成 dblclick）。"""
+    seq = []
+    if human:
+        pts = human_move_events(0, 0, x, y, seed=seed)
+        for px, py in pts:
+            seq.append({"type": "mouseMoved", "x": px, "y": py,
+                        "modifiers": 0})
+    else:
+        seq.append({"type": "mouseMoved", "x": x, "y": y, "modifiers": 0})
+    seq.append({"type": "mousePressed", "x": x, "y": y,
+                "button": button, "buttons": _press_mask(button),
+                "clickCount": 1, "modifiers": 0})
+    seq.append({"type": "mouseReleased", "x": x, "y": y,
+                "button": button, "buttons": 0, "clickCount": 1,
+                "modifiers": 0})
+    for i in range(2, max(2, int(count)) + 1):
         seq.append({"type": "mousePressed", "x": x, "y": y,
-                    "button": button, "buttons": press, "clickCount": i,
-                    "modifiers": 0})
+                    "button": button, "buttons": _press_mask(button),
+                    "clickCount": i, "modifiers": 0})
         seq.append({"type": "mouseReleased", "x": x, "y": y,
                     "button": button, "buttons": 0, "clickCount": i,
                     "modifiers": 0})
     return seq
 
 
-def drag_events(x1, y1, x2, y2, steps=8, button="left"):
-    """拖拽 = mousePressed -> 插值 mouseMoved×steps -> mouseReleased
-    （含按下/释放的 clickCount 与 buttons 位）。纯函数可单测。"""
+def drag_events(x1, y1, x2, y2, steps=0, button="left", human=True,
+                jitter=2.0, seed=None):
+    """拖拽：按下 → 移动（human=True 走人类化贝塞尔+抖动轨迹，v0.2.4
+    ——按住态 buttons=press；False=直线插值旧行为）→ 释放。"""
     x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
-    steps = max(1, int(steps))
     press = _press_mask(button)
     seq = [{"type": "mouseMoved", "x": x1, "y": y1, "modifiers": 0}]
     seq.append({"type": "mousePressed", "x": x1, "y": y1,
                 "button": button, "buttons": press, "clickCount": 1,
                 "modifiers": 0})
-    for i in range(1, steps + 1):
-        t = i / steps
-        seq.append({"type": "mouseMoved",
-                    "x": round(x1 + (x2 - x1) * t, 2),
-                    "y": round(y1 + (y2 - y1) * t, 2),
-                    "buttons": press, "modifiers": 0})
+    if human:
+        dist = math.hypot(x2 - x1, y2 - y1)
+        steps = steps if steps and steps > 0 else max(
+            10, min(40, int(dist / 20)))
+        pts = human_move_events(x1, y1, x2, y2, steps=steps,
+                                jitter=min(jitter, 1.5), seed=seed)
+        for x, y in pts:
+            seq.append({"type": "mouseMoved", "x": x, "y": y,
+                        "buttons": press, "modifiers": 0})
+    else:
+        steps = max(1, int(steps or 8))
+        for i in range(1, steps + 1):
+            t = i / steps
+            seq.append({"type": "mouseMoved",
+                        "x": round(x1 + (x2 - x1) * t, 2),
+                        "y": round(y1 + (y2 - y1) * t, 2),
+                        "buttons": press, "modifiers": 0})
     seq.append({"type": "mouseReleased", "x": x2, "y": y2,
                 "button": button, "buttons": 0, "clickCount": 1,
                 "modifiers": 0})

@@ -20,11 +20,17 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
 - **浏览器捕获**（v0.2.0）：纯标准库 CDP 客户端——`cdp-tabs`/
   `cdp-shot` 抓任何 Chromium 系浏览器的标签页（**无头/有头通吃，与
   AI 宿主无关**），captureBeyondViewport 全页，自动发现调试端口
+- **浏览器操作**（v0.2.1-0.2.4）：点击/双击/拖拽/滚轮/全键盘/组合
+  快捷键/整段填表（insertText 含中文）；**人类化鼠标轨迹**（三次
+  贝塞尔+缓动+微抖动，比人快、首尾精确落点，`--teleport` 可退回瞬移）
+  ——事件只进指定标签页，与用户键鼠天然隔离
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，七工具 `ashot_shot` / `ashot_annotate` /
+- **MCP**：stdio JSON-RPC 2.0，十三工具 `ashot_shot` / `ashot_annotate` /
   `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
-  起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0 起），与 CLI 同能力
+  起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0）/ `ashot_cdp_key`
+  + `ashot_cdp_wheel` + `ashot_cdp_click` + `ashot_cdp_drag`（v0.2.1）/
+  `ashot_cdp_dblclick` + `ashot_cdp_type`（v0.2.3），与 CLI 同能力
 
 ## 用法
 
@@ -55,6 +61,9 @@ stdio JSON-RPC 2.0（协议 2024-11-05），四工具与 CLI 同能力：
 | `ashot_screens` | 列显示器 |
 | `ashot_fonts` | 列已装字体族（text 的 font 先查后用；v0.1.10 起） |
 | `ashot_show` | 图片→数据 URL 内嵌 HTML（用户可见展示；v0.1.12 起） |
+| `ashot_cdp_tabs` | 列 CDP 浏览器 page 标签页（自动发现端口；v0.2.0 起） |
+| `ashot_cdp_shot` | CDP 标签页截图（无头/有头通吃，全页；v0.2.0 起） |
+| `ashot_cdp_key` / `ashot_cdp_wheel` / `ashot_cdp_click` / `ashot_cdp_drag` / `ashot_cdp_dblclick` / `ashot_cdp_type` | 浏览器操作：按键/组合键、滚轮、单击（人类化轨迹）、拖拽（人类化轨迹）、双击、整段填表（v0.2.1-0.2.4 起） |
 
 注册到宿主（示例为 ZCode 的 `mcp.servers.ashot`；路径基准=本文件
 所在目录即仓库根）：

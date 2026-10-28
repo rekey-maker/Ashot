@@ -179,15 +179,8 @@ def _cmd_cdp_click(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
-        seq = [
-            {"type": "mouseMoved", "x": a.x, "y": a.y, "modifiers": 0},
-            {"type": "mousePressed", "x": a.x, "y": a.y,
-             "button": a.button, "buttons": 1, "clickCount": 1,
-             "modifiers": 0},
-            {"type": "mouseReleased", "x": a.x, "y": a.y,
-             "button": a.button, "buttons": 0, "clickCount": 1,
-             "modifiers": 0},
-        ]
+        seq = cdp.click_events(a.x, a.y, button=a.button,
+                               human=not a.teleport, seed=a.seed)
         n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
@@ -202,7 +195,8 @@ def _cmd_cdp_drag(a):
         if not ws:
             return 1
         seq = cdp.drag_events(a.x1, a.y1, a.x2, a.y2,
-                              steps=a.steps, button=a.button)
+                              steps=a.steps, button=a.button,
+                              human=not a.teleport, seed=a.seed)
         n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
@@ -217,7 +211,8 @@ def _cmd_cdp_dblclick(a):
         if not ws:
             return 1
         seq = cdp.dblclick_events(a.x, a.y, button=a.button,
-                                  count=a.count)
+                                  count=a.count, human=not a.teleport,
+                                  seed=a.seed)
         n, _ = cdp.dispatch(ws, seq)
         print("dispatched: %d" % n)
         return 0
@@ -361,27 +356,38 @@ def main(argv=None):
     cc.add_argument("y", type=int, help="点击 y")
     cc.add_argument("--button", default="left",
                     choices=["left", "right", "middle"], help="键")
+    cc.add_argument("--teleport", action="store_true",
+                    help="跳过人类化移动轨迹（瞬移到位，旧行为）")
+    cc.add_argument("--seed", type=int, default=None,
+                    help="轨迹随机种子（复现用；缺省每次随机）")
     _add_common(cc)
     cc.set_defaults(func=_cmd_cdp_click)
 
-    cd = sub.add_parser("cdp-drag", help="CDP 鼠标拖拽（按下→插值移动→释放，v0.2.0）")
+    cd = sub.add_parser("cdp-drag", help="CDP 鼠标拖拽（人类化轨迹按下→移动→释放，v0.2.4）")
     cd.add_argument("x1", type=int, help="起点 x")
     cd.add_argument("y1", type=int, help="起点 y")
     cd.add_argument("x2", type=int, help="终点 x")
     cd.add_argument("y2", type=int, help="终点 y")
-    cd.add_argument("--steps", type=int, default=8, help="插值步数")
+    cd.add_argument("--steps", type=int, default=0,
+                    help="轨迹步数（缺省按距离自适应 10~40）")
     cd.add_argument("--button", default="left",
                     choices=["left", "right", "middle"], help="键")
+    cd.add_argument("--teleport", action="store_true",
+                    help="退回直线插值（非人类化轨迹）")
+    cd.add_argument("--seed", type=int, default=None, help="轨迹随机种子")
     _add_common(cd)
     cd.set_defaults(func=_cmd_cdp_drag)
 
-    cb = sub.add_parser("cdp-dblclick", help="CDP 鼠标双击/多击（v0.2.3）")
+    cb = sub.add_parser("cdp-dblclick", help="CDP 鼠标双击/多击（人类化接近轨迹，v0.2.4）")
     cb.add_argument("x", type=int, help="双击 x（CSS 像素）")
     cb.add_argument("y", type=int, help="双击 y")
     cb.add_argument("--button", default="left",
                     choices=["left", "right", "middle"], help="键")
     cb.add_argument("--count", type=int, default=2,
                     help="点击数（2=双击，3=三连击）")
+    cb.add_argument("--teleport", action="store_true",
+                    help="跳过人类化移动轨迹")
+    cb.add_argument("--seed", type=int, default=None, help="轨迹随机种子")
     _add_common(cb)
     cb.set_defaults(func=_cmd_cdp_dblclick)
 
