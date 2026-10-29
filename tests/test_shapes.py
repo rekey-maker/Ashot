@@ -142,6 +142,25 @@ def test_compile_rejects_bad_geometry():
 
 # ---------- 渲染：矢量 vs 像素 ----------
 
+def _ink(png):
+    _, _, px = annotate._decode_png(png)
+    bg = (0x20, 0x20, 0x20)
+    return sum(1 for i in range(0, len(px), 4)
+               if (px[i], px[i + 1], px[i + 2]) != bg)
+
+
+def test_pixel_and_vector_cover_the_same_curve():
+    """两路必须画同一条曲线：墨量差 ≤5%（证明像素路没漏末段/步长一致）。"""
+    ops = [{"kind": "curve", "x0": 20, "y0": 160, "c1x": 80, "c1y": 20,
+            "c2x": 180, "c2y": 220, "x1": 280, "y1": 80, "width": 5,
+            "color": "#00E5FF"}]
+    vec, backend, _ = annotate_gdi.annotate_png_vector(_bg(), ops)
+    px = annotate.annotate_png(_bg(), ops)
+    iv, ip = _ink(vec), _ink(px)
+    assert backend == "gdi+"
+    assert abs(iv - ip) <= max(10, int(iv * 0.05)), (iv, ip)
+
+
 _SHAPES = [
     {"kind": "curve", "x0": 20, "y0": 160, "c1x": 80, "c1y": 20,
      "c2x": 180, "c2y": 220, "x1": 280, "y1": 80, "width": 5,
