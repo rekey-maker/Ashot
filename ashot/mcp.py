@@ -161,6 +161,9 @@ def _screens():
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
               max_side=0):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
+    **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
+    arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
+    与箭头同一条原理：Python 采样成点列 → GDI+ 抗锯齿描边。
     text(中文可标注，GDI+ 系统字体；v0.1.9 起可选 font=字体族名/bold=
     粗体开关，缺省微软雅黑+粗体；未安装字体名静默回退默认；font/bold
     仅矢量路生效，像素降级路不认；**v0.2.6 起 text 可带 w=布局宽，

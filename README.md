@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.0**，MCP 22 个工具。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.1**，MCP 22 个工具。
 
 ## 安装与要求
 
@@ -19,7 +19,9 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `--scale/--max-side/--jpg`**（v0.4.0，不必再单独跑一次 resize）
 - **标注**（v0.1.7 起矢量形状走 GDI+ 抗锯齿，失败自动降级纯像素画布，
   收据 `backend` 字段如实标注）：
-  `rect`（可选圆角）/ `ellipse` / `line` / `arrow`（缺省渐变实心箭头，
+  `rect`（可选圆角）/ `ellipse` / `line` / **`curve`（三次贝塞尔）/
+  `arc`（椭圆弧，起止角）/ `polyline`（折线）**——v0.4.1 新增，与
+  箭头同一条原理（Python 采样成点列 → GDI+ 抗锯齿描边）/ `arrow`（缺省渐变实心箭头，
   细杆恒定 + 1:1 细三角头，短箭头长封顶）/ `text`（中文；v0.1.9 起可选
   `font`/`bold`，缺省微软雅黑粗体；v0.2.6 起可带 `w` 由 GDI+ 原生
   换行，越界进 `bounds_warn` 而不是悄悄被裁）/ `mosaic` / `blur` /
@@ -138,7 +140,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 python -m pytest tests/ -q
 ```
 
-141 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+153 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -183,11 +185,13 @@ ashot/
 ├── dom.py                      # 元素矩形+可见性 / iframe 坐标映射（v0.2.7+）
 ├── vision.py                   # 图像指纹与差异（v0.2.7）
 ├── transform.py + _gdi_image.ps1  # 裁切/缩放/JPEG（v0.4.0，纯 ASCII PS）
+├── geometry.py                 # 曲线/弧线采样（v0.4.1，纯数学可单测）
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
 ├── tests/test_ashot.py         # 111 项（v0.4.0 前的回归锁）
 └── tests/test_transform.py     # 30 项（v0.4.0 裁切/缩放/JPEG）
+├── tests/test_shapes.py      # 12 项（v0.4.1 曲线/弧线/折线）
 ```
 
 ## 版本与文档

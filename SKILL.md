@@ -30,7 +30,7 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   截完直接缩放或存 JPEG（缺省文件名跟着变 `shot_*.jpg`）——
   不必再单独跑 `resize`。
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
-  **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注；v0.1.9 起可选
+  **rect/ellipse/arrow/line/**curve/arc/polyline**/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
   未安装字体名 GDI+ 静默回退默认字体——**先 `fonts <子串>` 核名再写
   font**；**v0.2.6 起 text 可带 `w`=布局宽（像素），GDI+ 按真实字体
@@ -38,6 +38,13 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （如 "op[0] text 超出画布：右 135px"），自己改坐标或给 `w`）/mosaic/blur/
   step（自动递增编号）/number（显式编号 value）/spotlight（聚光灯 dim）/
   smarterase（智能擦除）**，坐标亦收 "x,y,w,h" 串（coords/area 键）。
+  **v0.4.1 新三件**（与箭头同一条矢量原理：Python 采样成点列 →
+  GDI+ 抗锯齿描边，不是像素硬边）：
+  `curve` x0,y0,c1x,c1y,c2x,c2y,x1,y1（三次贝塞尔；也收
+  points=[[x,y]×4] 或 coords 8 个数）/ `arc` x,y,w,h,start,sweep
+  （**度**，顺时针，y 向下；sweep 负=逆时针，>360 夹到一圈；
+  也可用 end 代替 sweep）/ `polyline` points=[[x,y],...] 或
+  coords="x1,y1,x2,y2,..."。三者都进 `bounds_warn`。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
   渐变实心箭头（v0.1.8 重校准：细杆恒定≈width + 1:1 细三角头，头长=
   头宽=3.5×width，短箭头长封顶 0.4×全长；端点定总长，杆=总长−头可
@@ -153,7 +160,7 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 
 ## MCP（ashot 域名，宿主注册后可用）
 
-v0.4.0 起 **22 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+v0.4.1 起 **22 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
 `ashot_crop` / `ashot_resize` /
 `ashot_fonts` / `ashot_show` / `ashot_hash` / `ashot_diff` / `ashot_element` /
 `ashot_frames` / `ashot_frame_element` / `ashot_cdp_tabs` /

@@ -5,14 +5,19 @@
 _gdi_render.ps1（System.Drawing 抗锯齿），编排归 annotate_gdi。
 
 形状双轨：
-  矢量形状（rect/ellipse/line/arrow/step/number/text）编译为
-    stroke（路径点列+宽，GDI+ Pen RoundCap/Join 抗锯齿）/ fill（多边形）/
+  矢量形状（rect/ellipse/line/curve/arc/polyline/arrow/step/number/text）
+    编译为 stroke（路径点列+宽，GDI+ Pen RoundCap/Join 抗锯齿）/ fill（多边形）/
     text / dot（圆底+居中数字）四类指令；
   像素操作（mosaic/blur/spotlight/smarterase）原样传回，由纯像素画布处理
     （它们是邻域统计，无抗锯齿概念）。
+
+曲线/弧线（v0.4.1）与箭头同一条原理：**几何在 Python 采样成点列，渲染端
+只负责忠实描边**——所以和箭头一样是抗锯齿矢量合成，不是像素画布硬边。
+采样密度依据见 geometry.py 文件头（GDI+ DrawBezier 内部同样展平）。
 """
 import math
 
+from . import geometry
 from ._coerce import as_bool
 
 DEFAULT_COLOR = "#FF3B30"
@@ -159,6 +164,23 @@ def compile_ops(ops):
             else:
                 x1, y1, x2, y2 = _nums(op, ("x1", "y1", "x2", "y2"))
                 pts = [(x1, y1), (x2, y2)]
+            sh = _stroke(pts, color, width)
+            sh["i"] = oi
+            shapes.append(sh)
+        elif kind == "curve":
+            pts = geometry.pad_points(
+                geometry.bezier_points(*geometry.parse_curve(op)))
+            sh = _stroke(pts, color, width)
+            sh["i"] = oi
+            shapes.append(sh)
+        elif kind == "arc":
+            pts = geometry.pad_points(
+                geometry.arc_points(*geometry.parse_arc(op)))
+            sh = _stroke(pts, color, width)
+            sh["i"] = oi
+            shapes.append(sh)
+        elif kind == "polyline":
+            pts = geometry.polyline_points(geometry.parse_polyline(op))
             sh = _stroke(pts, color, width)
             sh["i"] = oi
             shapes.append(sh)

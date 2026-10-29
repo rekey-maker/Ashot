@@ -11,6 +11,10 @@ zlib/struct 手写 PNG（与 output 同款编码器思路），不依赖 PIL。
                                      （尾细头胖+三角头，微信截图风格，
                                      用户裁决）；style="line" 回退旧直杆
   line   x1,y1,x2,y2 [color] [width] 直线
+  curve  x0,y0,c1x,c1y,c2x,c2y,x1,y1 三次贝塞尔（v0.4.1：采样成折线，
+                                     与箭头同一条矢量原理）
+  arc    x,y,w,h,start,sweep        椭圆弧（度、顺时针；sweep 可负）
+  polyline points=[[x,y],...]       折线（或 coords="x1,y1,x2,y2,..."）
   text   x,y:内容 [color] [size]     文字（内置 8x16 点阵，仅 ASCII 稳定；
                                      中文留 B 交互窗形态，此处诚实降级为框）
   mosaic x,y,w,h [block]             马赛克（block 像素块均值涂抹）
@@ -34,6 +38,8 @@ import math
 import os
 import struct
 import zlib
+
+from . import geometry
 
 DEFAULT_COLOR = (0xFF, 0x3B, 0x30)
 DEFAULT_WIDTH = 3
@@ -490,6 +496,21 @@ def annotate_png(png_bytes, ops):
             cv.text(int(op.get("x", 0)) + ox, int(op.get("y", 0)) + oy,
                     body, color_body, sz,
                     max_width=int(op.get("w") or 0) or None)
+            continue
+        if kind in ("curve", "arc", "polyline"):
+            # v0.4.1：曲线/弧线/折线。与矢量路共用 geometry 的同一套采样
+            # （像素路只是把折线逐段画出来——硬边，收据 backend=pixel 已亮牌）
+            if kind == "curve":
+                pts = geometry.pad_points(
+                    geometry.bezier_points(*geometry.parse_curve(op)))
+            elif kind == "arc":
+                pts = geometry.pad_points(
+                    geometry.arc_points(*geometry.parse_arc(op)))
+            else:
+                pts = geometry.polyline_points(geometry.parse_polyline(op))
+            for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                cv.line(int(round(ax)), int(round(ay)),
+                        int(round(bx)), int(round(by)), color, width)
             continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")
