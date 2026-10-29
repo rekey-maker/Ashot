@@ -162,6 +162,19 @@ retention 边界等；v0.4.0 另加 `tests/test_transform.py` 30 项（裁切逐
 > 建目录，本机 ACL 会拒读），加 `--basetemp=<工作区内新目录>` 即可；
 > 这与项目代码无关。
 
+## 定位精度（2026-10-29 实测）
+
+- **桌面截图** 3840×2160，`rect(100,100,200,100,width=6)` → 墨迹 bbox
+  `97,97–303,203`，**坐标误差 0**（±3 是线宽一半）。
+- **浏览器 dpr=2**：`snapshot` 的 box 与 `element_rect` 5/5 **最大 0px**；
+  selector 画框中心 **0**、边缘 ±2（线宽 4 的一半）；`pad` 与
+  `space=document` 的 scroll×dpr 偏移均 **0 误差**。
+- **真实页 example.com**：`ref` 画 `<p>` 边框中心 **0**（边缘 ±2）。
+- 交互：`click+verify` 生效、原生 range `8→82`、`scrollables` 只命中
+  `overflow:auto` 容器。
+
+> 结论：坐标本身不漂；肉眼看到的 ±2px 是描边线宽的一半，不是定位误差。
+
 ## 设计原则
 
 - **零第三方依赖**：标准库 ctypes/zlib + 系统自带 .NET（GDI+ 渲染），
