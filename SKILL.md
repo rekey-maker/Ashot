@@ -29,7 +29,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   **v0.4.0**：`--scale S` / `--max-side N`（只缩不放）/ `--jpg Q`
   截完直接缩放或存 JPEG（缺省文件名跟着变 `shot_*.jpg`）——
   不必再单独跑 `resize`。
-- `annotate <png|jpg> '<ops JSON>' [--dpr K] [--template 文件]`——对既有图标注（v0.5.0 起 JPEG 直接进），ops kind ∈
+- `annotate <png|jpg> '<ops JSON>' [--dpr K] [--template 文件]
+  [--port/--index/--ws]`——ops 里可用 `selector`/`ref`（v0.6.0）——对既有图标注（v0.5.0 起 JPEG 直接进），ops kind ∈
   **rect/ellipse/arrow/line/**curve/arc/polyline**/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
   未安装字体名 GDI+ 静默回退默认字体——**先 `fonts <子串>` 核名再写
@@ -153,6 +154,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   + `visible`（checkVisibility）/`in_viewport`/`visible_ratio`/
   `occluded`（中心点 elementFromPoint）/`pointer_events`/dpr/滚动。
   **坐标可直接喂 cdp-click**；截图坐标要先 × to_css，别混用。
+- `snapshot`——页面结构快照：`[ref=eN] [box=x,y,w,h]`（视口 CSS），
+  refs 映射回 CSS 选择器（v0.6.0；比看截图猜坐标准）。
 - `frames`——frame 树（id/url/parent/depth）+ 能取到的 iframe 矩形。
 - `frame-element <iframe选择器|JSON数组> <选择器>`——iframe 内元素 →
   主页面视口坐标；同源任意深度、跨域同进程、**跨站 OOPIF**（Target
@@ -167,7 +170,7 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 v0.4.1 起 **22 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
 `ashot_crop` / `ashot_resize` /
 `ashot_fonts` / `ashot_show` / `ashot_hash` / `ashot_diff` / `ashot_element` /
-`ashot_frames` / `ashot_frame_element` / `ashot_cdp_tabs` /
+`ashot_frames` / `ashot_frame_element` / `ashot_snapshot` / `ashot_cdp_tabs` /
 `ashot_cdp_shot` / `ashot_cdp_view` / `ashot_cdp_eval` / `ashot_cdp_key` /
 `ashot_cdp_wheel` / `ashot_cdp_click` / `ashot_cdp_drag` /
 `ashot_cdp_dblclick` / `ashot_cdp_type`

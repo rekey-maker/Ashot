@@ -425,7 +425,7 @@ def test_mcp_tool_schemas():
                                   "ashot_annotate", "ashot_fonts",
                                   "ashot_show", "ashot_hash", "ashot_diff",
                                   "ashot_element", "ashot_frames",
-                                  "ashot_frame_element",
+                                  "ashot_frame_element", "ashot_snapshot",
                                   "ashot_cdp_tabs",
                                   "ashot_cdp_shot", "ashot_cdp_key",
                                   "ashot_cdp_wheel", "ashot_cdp_click",
@@ -448,7 +448,8 @@ def test_mcp_tool_schemas():
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview",
-                                     "jpg", "quality", "max_side", "dpr"}
+                                     "jpg", "quality", "max_side", "dpr",
+                                     "port", "index", "ws"}
     assert sc["properties"]["dpr"]["type"] == "number", \
         "v0.5.1：dpr 典型值 1.25/1.566，声明 integer 会让宿主拒参"
     assert "dpr" in mcp_mod.TOOLS["ashot_annotate"]["description"], \
@@ -2788,3 +2789,53 @@ def test_cli_resize_dir_failure_keeps_going(tmp_path):
     assert r.returncode == 1, "有失败必须非零退出"
     assert (dst / "good.png").is_file(), "单张失败不拖垮其余"
     assert "1 成功 / 1 失败" in r.stderr
+
+
+# ---------- v0.6.0：结构化快照 / selector / 预览坐标映射 ----------
+
+def test_dom_snapshot_stub(monkeypatch):
+    """snapshot：树格式化 + refs 映射（不靠像素猜坐标）。"""
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    payload = {
+        "tree": {"role": "body", "name": "", "ref": None, "box": None,
+                 "kids": [{"role": "button", "name": "提交", "ref": "e1",
+                           "box": [10, 20, 80, 32], "kids": []}]},
+        "refs": {"e1": {"selector": "#submit", "tag": "button",
+                        "text": "提交", "rect": [10, 20, 80, 32]}},
+        "count": 1, "url": "https://x/", "title": "t", "dpr": 1.5,
+        "scroll": [0, 0]}
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": payload}})
+    rec = dom.snapshot("ws://x")
+    assert 'button "提交" [ref=e1] [box=10,20,80,32]' in rec["tree"]
+    assert rec["refs"]["e1"]["selector"] == "#submit"
+    assert rec["count"] == 1 and rec["dpr"] == 1.5
+
+
+def test_apply_selectors_stub(monkeypatch):
+    """selector/ref → 物理像素；pad 外扩；箭头拒绝（语义未定）。"""
+    from ashot import dom
+    rect = {"x": 10, "y": 20, "w": 100, "h": 40, "dpr": 1.5}
+    monkeypatch.setattr(dom, "element_rect",
+                        lambda ws, sel, timeout=15: dict(rect))
+    ops = [{"kind": "rect", "selector": "#a", "width": 3},
+           {"kind": "text", "selector": "#a", "text": "t", "size": 12},
+           {"kind": "rect", "ref": "e1", "pad": 2}]
+    out = dom.apply_selectors("ws://x", ops, refs={"e1": {"selector": "#b"}})
+    assert (out[0]["x"], out[0]["y"], out[0]["w"], out[0]["h"]) == (
+        15, 30, 150, 60)
+    assert (out[1]["x"], out[1]["y"]) == (15, 30)
+    assert (out[2]["x"], out[2]["w"]) == (13, 154)
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        dom.apply_selectors("ws://x", [{"kind": "arrow", "selector": "#a",
+                                        "x1": 1, "y1": 2, "x2": 3, "y2": 4}])
+
+
+def test_preview_to_source_mapping():
+    """预览收据带源图尺寸与换算系数（模型看图坐标可回到源图）。"""
+    big = output.bgra_to_png(800, 600, bytes([0, 0, 255, 255]) * 480000)
+    jpeg, info = output.preview_jpeg(big)
+    assert info["src"][0] == 800
+    assert info["to_source"] == round(800 / float(info["width"]), 4)

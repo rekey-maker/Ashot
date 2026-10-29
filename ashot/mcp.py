@@ -159,7 +159,7 @@ def _screens():
 
 
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
-              max_side=0, dpr=0.0):
+              max_side=0, dpr=0.0, port=None, index=0, ws=None):
     """对既有 PNG/JPEG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
     arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
@@ -185,6 +185,11 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     `w`（布局宽）也会被缩放，换行位置可能变。"""
     png = imageio.read_png(str(image))
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
+    if any(isinstance(o, dict) and (o.get("selector") or o.get("ref"))
+           for o in (ops_list or [])):
+        ws_url = _resolve_ws(port, index, ws)
+        refs = _LAST_REFS.get("refs") if _LAST_REFS.get("ws") == ws_url else None
+        ops_list = dom.apply_selectors(ws_url, ops_list or [], refs=refs)
     if dpr:
         ops_list = annotate.scale_ops(ops_list or [], dpr)
     stats = {}
@@ -473,6 +478,22 @@ def _resolve_ws(port, index=0, ws=None, allow_multi=False):
     return cdp.ws_for(p, index=int(index or 0))
 
 
+_LAST_REFS = {}   # 最近一次 snapshot 的 {ws, refs}（stdio 单线程，够用）
+
+
+def _snapshot(port=None, index=0, ws=None, max_nodes=150):
+    """页面结构快照（v0.6.0）：返回 text 树 + ref 映射（eN → CSS 选择器 /
+    矩形），Playwright MCP 同思路——**用结构化元素代替像素猜坐标**。
+    收据 {ok, tree, refs, count, url, title, dpr, scroll}；ref 可用于
+    `ashot_annotate` 的 ops（`{"kind":"rect","ref":"e5"}`）与 selector。"""
+    ws_url = _resolve_ws(port, index, ws)
+    rec = dom.snapshot(ws_url, max_nodes=int(max_nodes or 150))
+    _LAST_REFS.clear()
+    _LAST_REFS.update({"ws": ws_url, "refs": rec.get("refs") or {}})
+    rec["ok"] = True
+    return json.dumps(rec, ensure_ascii=False)
+
+
 def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
     """CDP 按键/组合键/文本注入（v0.2.0 §4.2.2）：key=键名（a/enter/
     tab/arrowup/s…）；modifiers=组合键 "ctrl+shift"（位掩码
@@ -709,6 +730,7 @@ _tool_named("ashot_hash", _hash)
 _tool_named("ashot_diff", _diff)
 _tool_named("ashot_element", _element)
 _tool_named("ashot_frames", _frames)
+_tool_named("ashot_snapshot", _snapshot)
 _tool_named("ashot_frame_element", _frame_element)
 _tool_named("ashot_cdp_tabs", _cdp_tabs)
 _tool_named("ashot_cdp_shot", _cdp_shot)

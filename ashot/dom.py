@@ -339,6 +339,166 @@ def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
     return _clip_to_visible(ws, out, chain, timeout)
 
 
+_SNAPSHOT_JS = r"""
+(() => {
+  const MAX = %d;
+  const MAXD = 9;
+  const refs = {};
+  let n = 0;
+  const vis = el => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === "hidden" || cs.display === "none") return false;
+    if (parseFloat(cs.opacity || "1") === 0) return false;
+    return true;
+  };
+  const txt = el => (el.getAttribute("aria-label") || el.getAttribute("alt")
+    || el.value || el.innerText || el.title || "").trim()
+    .replace(/\s+/g, " ").slice(0, 80);
+  const role = el => el.getAttribute("role") || el.tagName.toLowerCase();
+  const interesting = el => {
+    const t = el.tagName.toLowerCase();
+    if (/^(a|button|input|select|textarea|summary|option|label)$/.test(t)) return true;
+    if (el.getAttribute("role") || el.hasAttribute("onclick")
+        || el.getAttribute("contenteditable") === "true") return true;
+    return false;
+  };
+  const cssPath = el => {
+    if (el.id) return "#" + CSS.escape(el.id);
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && cur !== document.body) {
+      let sel = cur.tagName.toLowerCase();
+      const par = cur.parentElement;
+      if (par) {
+        const same = [...par.children].filter(c => c.tagName === cur.tagName);
+        if (same.length > 1) sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+      }
+      parts.unshift(sel);
+      cur = par;
+      if (parts.length > 6) break;
+    }
+    return parts.join(" > ");
+  };
+  const walk = (el, depth) => {
+    if (n >= MAX || depth > MAXD) return null;
+    const kids = [];
+    for (const c of el.children) {
+      const k = walk(c, depth + 1);
+      if (k) kids.push(k);
+      if (n >= MAX) break;
+    }
+    const name = txt(el);
+    const show = interesting(el) || (kids.length === 0 && name);
+    if (!show && !kids.length) return null;
+    const node = {role: role(el), name: name, kids: kids, ref: null, box: null};
+    if (show && vis(el)) {
+      const r = el.getBoundingClientRect();
+      const ref = "e" + (++n);
+      node.ref = ref;
+      node.box = [Math.round(r.left), Math.round(r.top),
+                  Math.round(r.width), Math.round(r.height)];
+      refs[ref] = {selector: cssPath(el), tag: el.tagName.toLowerCase(),
+                   text: name, rect: node.box};
+    }
+    if (!node.ref && !kids.length) return null;
+    return node;
+  };
+  const root = walk(document.body, 0);
+  return {tree: root, refs: refs, count: n,
+          url: location.href, title: document.title,
+          dpr: window.devicePixelRatio,
+          scroll: [window.scrollX, window.scrollY]};
+})()
+"""
+
+
+def snapshot(ws, max_nodes=150, timeout=15):
+    """页面结构快照（v0.6.0）：Playwright MCP 同思路——结构化树 + ref，
+    不靠像素猜坐标。每个可见节点带 `[ref=eN] [box=x,y,w,h]`（视口 CSS
+    像素）；refs 映射回 CSS 选择器，供 annotate 的 selector/ref 使用。
+
+    零依赖：纯 Runtime.evaluate，不碰 Accessibility 域，也不抓图。
+    """
+    js = _SNAPSHOT_JS % int(max_nodes)
+    out = _eval_raw(ws, js, timeout)
+    if not out:
+        raise RuntimeError("页面快照为空")
+    lines = []
+
+    def fmt(node, depth):
+        if not node:
+            return
+        parts = ["-" * 1 + " " * 0]
+        indent = "  " * depth
+        head = "%s- %s" % (indent, node.get("role") or "?")
+        if node.get("name"):
+            head += ' "%s"' % node["name"].replace('"', "'")
+        if node.get("ref"):
+            head += " [ref=%s]" % node["ref"]
+        if node.get("box"):
+            b = node["box"]
+            head += " [box=%d,%d,%d,%d]" % tuple(b)
+        lines.append(head)
+        for k in node.get("kids") or []:
+            fmt(k, depth + 1)
+
+    fmt(out.get("tree"), 0)
+    return {"tree": "\n".join(lines), "refs": out.get("refs") or {},
+            "count": int(out.get("count") or 0),
+            "url": out.get("url"), "title": out.get("title"),
+            "dpr": out.get("dpr"), "scroll": out.get("scroll")}
+
+
+def apply_selectors(ws, ops, refs=None, timeout=15):
+    """把 ops 里的 `selector`/`ref` 解析成像素坐标（v0.6.0）。
+
+    - selector：CSS 选择器，实时取 element_rect（准，不靠猜）；
+    - ref：snapshot 返回的 eN，经 refs 映射回 selector 再实时取；
+    - 矩形族（rect/ellipse/mosaic/blur/spotlight/smarterase）填
+      x/y/w/h（CSS×dpr=物理像素，截图坐标）；text 填左上角；
+      箭头/直线请直接用坐标（两端元素语义没定，不猜）；
+    - `pad`（可选）：向外扩的物理像素数（矩形族）。
+    适用视口截图；整页截图请自己加 scroll 偏移（收据里有 scroll）。
+    """
+    out = []
+    for op in ops:
+        if not isinstance(op, dict):
+            raise ValueError("op 需要对象：%r" % (op,))
+        sel = op.get("selector")
+        ref = op.get("ref")
+        if ref:
+            info = (refs or {}).get(str(ref))
+            if not info:
+                raise ValueError("ref 不存在（先调用 snapshot）：%r" % (ref,))
+            sel = info.get("selector")
+        if not sel:
+            out.append(op)
+            continue
+        rect = element_rect(ws, sel, timeout=timeout)
+        k = float(op.get("dpr") or rect.get("dpr") or 1.0)
+        kind = op.get("kind")
+        o = dict(op)
+        o.pop("selector", None)
+        o.pop("ref", None)
+        if kind in ("rect", "ellipse", "mosaic", "blur", "spotlight",
+                    "smarterase"):
+            pad = float(o.pop("pad", 0) or 0)
+            o["x"] = rect["x"] * k - pad
+            o["y"] = rect["y"] * k - pad
+            o["w"] = rect["w"] * k + pad * 2
+            o["h"] = rect["h"] * k + pad * 2
+        elif kind == "text":
+            o["x"] = rect["x"] * k
+            o["y"] = rect["y"] * k
+        else:
+            raise ValueError("selector/ref 只支持矩形族与 text；"
+                             "%r 请直接用坐标" % (kind,))
+        out.append(o)
+    return out
+
+
 def frames(ws, timeout=15):
     """frame 树（id/url/name/parent/depth），并尽力附上 iframe 自身矩形。"""
     out = []

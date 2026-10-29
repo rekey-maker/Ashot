@@ -133,6 +133,12 @@ def _cmd_annotate(a):
             ops = list(tpl) + list(ops)
         if not ops:
             raise ValueError("annotate 合并后 ops 为空（模板/内联都没给标注）")
+        if any(isinstance(o, dict) and (o.get("selector") or o.get("ref"))
+               for o in ops):
+            ws = _resolve_cdp_ws(a)
+            if not ws:
+                raise ValueError("ops 里有 selector/ref，需要 --port/--index/--ws")
+            ops = dom.apply_selectors(ws, ops)
         if a.dpr:
             ops = annotate.scale_ops(ops, a.dpr)
             print("dpr: x%g（只缩放坐标，字号/线宽不变）" % a.dpr,
@@ -408,6 +414,20 @@ def _cmd_frame_element(a):
         if frames_arg.strip().startswith("["):
             frames_arg = json.loads(frames_arg)
         rec = dom.frame_element_rect(ws, frames_arg, a.selector)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_snapshot(a):
+    try:
+        ws = _resolve_cdp_ws(a)
+        if not ws:
+            return 1
+        rec = dom.snapshot(ws, max_nodes=int(a.max_nodes or 150))
+        rec["ok"] = True
         print(json.dumps(rec, ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001
@@ -824,6 +844,10 @@ def main(argv=None):
     s.add_argument("--template", default=None,
                    help="标注模板 JSON（ops 数组或 {\"ops\": […] }），"
                         "与内联 ops 合并（v0.5.0）")
+    s.add_argument("--port", type=int, default=None,
+                   help="ops 用 selector/ref 时的 CDP 端口（v0.6.0）")
+    s.add_argument("--index", type=int, default=0, help="第几个 page 标签")
+    s.add_argument("--ws", default=None, help="page 级 ws url（优先）")
     s.set_defaults(func=_cmd_annotate)
 
     def _add_size_args(p):
@@ -954,6 +978,12 @@ def main(argv=None):
                     help="先 scrollIntoView(center) 再量")
     _add_common(el)
     el.set_defaults(func=_cmd_element)
+
+    snp = sub.add_parser("snapshot",
+                         help="页面结构快照（ref+box，不靠像素猜坐标，v0.6.0）")
+    snp.add_argument("--max-nodes", dest="max_nodes", type=int, default=150)
+    _add_common(snp)
+    snp.set_defaults(func=_cmd_snapshot)
 
     fr = sub.add_parser("frames", help="frame 树 + iframe 自身矩形（v0.2.7）")
     _add_common(fr)

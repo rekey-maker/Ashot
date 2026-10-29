@@ -2,6 +2,35 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.6.0] - 2026-10-29
+
+### 新增（MCP 精确定位，对齐 Playwright MCP 的 ref 思路）
+- **`ashot_snapshot` / CLI `snapshot`**：页面结构快照——结构化树 + `[ref=eN]`
+  + `[box=x,y,w,h]`（视口 CSS 像素），ref 映射回 CSS 选择器。纯
+  `Runtime.evaluate`，零依赖、不抓图、不碰 Accessibility 域。
+- **`annotate` 的 ops 支持 `selector` / `ref`**：矩形族与 text 直接按元素
+  定位（CSS×dpr=截图物理像素），`pad` 可外扩；不再靠模型从缩略图猜坐标。
+  CLI 加 `--port/--index/--ws`，MCP `ashot_annotate` 同名参数。
+- **预览收据带 `src` / `to_source`**：模型看预览图后可用 `to_source`
+  把预览坐标换算回源图（此前只有 width/height，换算靠猜）。
+
+### 调研依据（2026-10-29）
+- **Playwright MCP**：用 accessibility snapshot 的 `ref` 指代元素，点击/输入
+  都接收 ref，明确"比截图更准"；其 README 也承认 CLI+Skills 对编码 agent
+  更省 token。本版采用同样的"结构化元素"路线（Ashot 用 DOM 快照）。
+- **OmniParser**（微软，MIT）：纯视觉检测 UI 元素；需要模型权重/推理依赖，
+  与 Ashot 零依赖红线冲突，仅作纯视觉场景参考。
+- **Set-of-Mark**：在元素上叠加编号，提升视觉模型的定位准确率；适合无 DOM
+  的桌面/Canvas，列入后续（`ashot_marks`）。
+- **Chrome DevTools MCP / browser-use**：前者全量 DevTools；后者 DOM 索引 +
+  视觉混合。均说明"DOM 结构 + 元素 id"是精度与成本的最优解。
+
+### 测试
+- **171 项全绿**（新增 3：快照树/refs、selector/ref 解析与 pad、预览
+  `to_source`）；真机（Edge）验证：`snapshot` 输出
+  `button "提交" [ref=e1] [box=120,80,100,40]`，`annotate` 用
+  `selector:"#btn"` 画框 bbox=(119,79)-(221,121)。
+
 ## [0.5.1] - 2026-10-29
 
 ### 审查修复（v0.5.0 两路子 agent 只读审查）

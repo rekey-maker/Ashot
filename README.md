@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.5.1**，MCP 22 个工具、24 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.6.0**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
 
 ## 安装与要求
 
@@ -103,7 +103,7 @@ python -m ashot.cli compose --area 100 100 1200 800 --box 0,0,900,600 \
 
 ## MCP 接入
 
-stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具（覆盖 CLI 主要能力；
+stdio JSON-RPC 2.0（协议 2024-11-05），二十三工具（覆盖 CLI 主要能力；
 `compose`/`info` 仅 CLI）：每个收据
 都带 `ver`——文件版本号对了但进程还是旧的，一眼识破；v0.2.6 起）：
 
@@ -117,6 +117,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具（覆盖 CLI 主要�
 | `ashot_show` | 图片→数据 URL 内嵌 HTML（用户可见展示；v0.1.12 起） |
 | `ashot_hash` / `ashot_diff` | 图像指纹 / 两图差异（v0.2.7；sha/dhash/ahash、YIQ+bbox+差异图） |
 | `ashot_element` / `ashot_frames` / `ashot_frame_element` | 元素视口矩形+可见性 / frame 树 / iframe 内元素映射（v0.2.7） |
+| `ashot_snapshot` | 页面结构快照：`[ref=eN] [box=…]` + ref→选择器（v0.6.0；annotate 可用 `selector`/`ref` 定位） |
 | `ashot_cdp_tabs` | 列 CDP 浏览器 page 标签页（自动发现端口；v0.2.0 起） |
 | `ashot_cdp_shot` | CDP 标签页截图（无头/有头通吃，全页；v0.2.0 起） |
 | `ashot_cdp_eval` / `ashot_cdp_view` | 执行 JS 取值 / 视口信息（vw/vh/dpr；v0.2.5） |
@@ -149,7 +150,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具（覆盖 CLI 主要�
 python -m pytest tests/ -q
 ```
 
-168 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+171 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -198,7 +199,7 @@ ashot/
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
-├── tests/test_ashot.py         # 118 项（主回归锁）
+├── tests/test_ashot.py         # 121 项（主回归锁）
 ├── tests/test_transform.py     # 30 项（裁切/缩放/JPEG）
 └── tests/test_shapes.py        # 19 项（曲线/弧线/折线）
 ```

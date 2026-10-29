@@ -311,6 +311,10 @@ def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
         info = {"width": int(w_s), "height": int(h_s),
                 "quality": int(q_s),
                 "bytes": int(len_s), "fit": int(len_s) <= max_bytes}
+        # v0.6.0：把预览坐标换算回源图坐标（模型看图猜的坐标不再靠猜）
+        if sz and sz[0] and info["width"]:
+            info["src"] = [int(sz[0]), int(sz[1])]
+            info["to_source"] = round(sz[0] / float(info["width"]), 4)
         with open(dst_path, "rb") as fh:
             jpeg = fh.read()
         return jpeg, info
