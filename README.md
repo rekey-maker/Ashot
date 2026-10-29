@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.2**，MCP 22 个工具，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.5.0**，MCP 22 个工具、24 个 CLI 子命令，**MIT 开源**。
 
 ## 安装与要求
 
@@ -31,6 +31,10 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
     支持，可给小数如 2.5；`<=0` 或 `>1000` 报错）。箭头/曲线的 width
     语义：箭头=头部粗细基准，曲线=笔宽
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
+- **输入/坐标便利**（v0.5.0）：`annotate`/`hash`/`diff`/`compose`
+  现在都吃 **JPEG**（GDI+ 转码，零依赖）；`annotate --dpr` 把 CSS 坐标
+  换算成物理像素（与 `element` 闭环）；`info` 看尺寸；`resize --dir`
+  目录批处理；`annotate --template` 复用标注模板
 - **裁切 / 缩放 / JPEG 交付**（v0.4.0，补 imgtool 的缺口）：对**已有
   图片**裁切（`crop --box x,y,w,h`）、缩放（`resize --scale/--width/
   --max-side`，max_side 只缩不放）、直接出 JPEG（`--jpg 85`）；
@@ -142,7 +146,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 python -m pytest tests/ -q
 ```
 
-160 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+167 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与

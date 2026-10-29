@@ -448,7 +448,7 @@ def test_mcp_tool_schemas():
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview",
-                                     "jpg", "quality", "max_side"}
+                                     "jpg", "quality", "max_side", "dpr"}
     assert sc["properties"]["preview"]["type"] == "boolean", \
         "v0.2.6 Q13：有 bool 缺省的参数应声明为 boolean"
     # v0.4.0：裁切/缩放两工具（与 CLI 同能力），dpr 必须是 number 不是 integer
@@ -2641,3 +2641,105 @@ def test_hide_fixed_elements_v028(monkeypatch):
     assert "fixed" in seen[0] and "sticky" in seen[0] and "data-ashot-vis" in seen[0]
     cdp_mod._restore_fixed("ws://x")
     assert "data-ashot-vis" in seen[1] and "removeAttribute" in seen[1]
+
+
+# ---------- v0.5.0：JPEG 输入 / dpr / info / 批量 ----------
+
+def _jpeg_of(png, quality=85):
+    from ashot import transform
+    data, _info = transform.apply(png, fmt="jpeg", quality=quality)
+    return data
+
+
+def test_imageio_jpeg_to_png():
+    """JPEG 输入归一化成 PNG（GDI+ 转码），尺寸不变。"""
+    from ashot import imageio
+    png = _solid(120, 80)
+    jpg = _jpeg_of(png)
+    assert jpg[:2] == b"\xff\xd8"
+    out = imageio.to_png(jpg)
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+    assert output.image_size(out) == (120, 80)
+    assert imageio.format_of(jpg) == "jpeg"
+    assert imageio.format_of(png) == "png"
+
+
+def test_transform_passthrough_requires_png():
+    """JPEG 不能走 PNG 的零拷贝快路径（旧实现会交 JPEG 冒充 PNG）。"""
+    from ashot import transform
+    png = _solid(60, 40)
+    jpg = _jpeg_of(png)
+    out, info = transform.apply(jpg, fmt="png")
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+    assert info["engine"] != "passthrough"
+
+
+def test_annotate_scale_ops_dpr():
+    """dpr 只缩放坐标，不缩放字号/线宽；points/coords 一并缩放。"""
+    from ashot import annotate
+    ops = [{"kind": "rect", "x": 10, "y": 20, "w": 30, "h": 40, "width": 6},
+           {"kind": "text", "x": 5, "y": 6, "text": "t", "size": 28},
+           {"kind": "polyline", "coords": "1,2,3,4"}]
+    out = annotate.scale_ops(ops, 1.5)
+    assert out[0]["x"] == 15 and out[0]["w"] == 45 and out[0]["width"] == 6
+    assert out[1]["size"] == 28
+    assert out[2]["coords"] == "1.5,3,4.5,6"
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        annotate.scale_ops(ops, 0)
+
+
+def test_cli_annotate_jpeg_with_dpr(tmp_path):
+    """annotate 直接吃 JPEG，且 --dpr 生效（输出仍是 PNG）。"""
+    src = tmp_path / "a.jpg"
+    src.write_bytes(_jpeg_of(_solid(100, 50)))
+    out = tmp_path / "o.png"
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "annotate",
+                        str(src), '[{"kind":"rect","x":5,"y":5,"w":10,'
+                        '"h":10,"width":2,"color":"#FF0000"}]',
+                        "--dpr", "2", "--out", str(out)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_cli_hash_jpeg(tmp_path):
+    src = tmp_path / "a.jpg"
+    src.write_bytes(_jpeg_of(_solid(80, 60)))
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "hash", str(src)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stdout)
+    assert (rec["w"], rec["h"]) == (80, 60)
+
+
+def test_cli_info_png_jpeg(tmp_path):
+    png = tmp_path / "a.png"; png.write_bytes(_solid(30, 20))
+    jpg = tmp_path / "a.jpg"; jpg.write_bytes(_jpeg_of(_solid(40, 10)))
+    for path, want in ((png, (30, 20)), (jpg, (40, 10))):
+        r = subprocess.run([sys.executable, "-m", "ashot.cli", "info", str(path)],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", cwd=ROOT)
+        assert r.returncode == 0, r.stderr
+        rec = json.loads(r.stdout)
+        assert (rec["w"], rec["h"]) == want
+    assert rec["format"] == "jpeg"
+
+
+def test_cli_resize_dir_batch(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    (src / "a.png").write_bytes(_solid(200, 100))
+    (src / "a.jpg").write_bytes(_jpeg_of(_solid(120, 60)))   # 同名冲突
+    (src / "b.jpg").write_bytes(_jpeg_of(_solid(100, 80)))
+    dst = tmp_path / "out"
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "resize",
+                        "--dir", str(src), "--out-dir", str(dst),
+                        "--max-side", "50"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    assert (dst / "a.png").is_file() and (dst / "b.png").is_file()
+    assert (dst / "a-2.png").is_file(), "同名不同扩展不能互相覆盖"
+    assert output.image_size((dst / "a.png").read_bytes()) == (50, 25)

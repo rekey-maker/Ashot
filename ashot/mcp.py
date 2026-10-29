@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ashot import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,  # noqa: E402
-                   output, show, transform, vision)
+                   imageio, output, show, transform, vision)
 from ashot._coerce import as_bool, as_int  # noqa: E402
 
 TOOLS = {}
@@ -159,7 +159,7 @@ def _screens():
 
 
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
-              max_side=0):
+              max_side=0, dpr=0):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
     arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
@@ -180,9 +180,10 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块 + ≤200KB JPEG。
     返回标注后 PNG 绝对路径；out 缺省写 <原名>_annotated.png——绝不覆盖
     原图（v0.1.5 P1 根修）。"""
-    with open(str(image), "rb") as fh:
-        png = fh.read()
+    png = imageio.read_png(str(image))
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
+    if dpr:
+        ops_list = annotate.scale_ops(ops_list or [], dpr)
     stats = {}
     out_bytes, backend, pixel_n = annotate_gdi.annotate_png_vector(
         png, ops_list or [], stats=stats)
@@ -641,8 +642,7 @@ def _hash(image, algo="dhash"):
     """图像指纹（v0.2.7）：sha256（精确）+ dhash/ahash（感知，64 bit 十六
     进制）。用途：截图去重、页面变化监控、UI 回归。algo 指定时收据额外给
     `value`。收据 {ok, sha256, dhash, ahash, w, h, value?}。"""
-    with open(str(image), "rb") as fh:
-        png = fh.read()
+    png = imageio.read_png(str(image))
     rec = vision.digest(png)
     if algo:
         rec["value"] = rec.get(str(algo))
@@ -655,10 +655,8 @@ def _diff(a, b, threshold=0.12, out=None):
     changed_px/ratio/bbox/size_mismatch；out 给了就落盘差异图（未变区域
     压暗、变化像素涂红）。**未做 pixelmatch 式抗锯齿检测**——字体边缘
     可能有少量假差异，收据 note 会写明。"""
-    with open(str(a), "rb") as fh:
-        pa = fh.read()
-    with open(str(b), "rb") as fh:
-        pb = fh.read()
+    pa = imageio.read_png(str(a))
+    pb = imageio.read_png(str(b))
     rec = vision.diff(pa, pb, threshold=float(threshold or 0.12),
                       make_image=bool(out))
     img = rec.pop("image", None)

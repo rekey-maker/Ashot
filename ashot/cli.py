@@ -8,7 +8,7 @@ import sys
 import time
 
 from . import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,
-               output, show, transform, vision)
+               imageio, output, show, transform, vision)
 
 
 def _csv(s, n, name):
@@ -112,13 +112,24 @@ def _cmd_shot(a):
 
 def _cmd_annotate(a):
     try:
-        with open(a.image, "rb") as fh:
-            png = fh.read()
+        png = imageio.read_png(a.image)
         if a.ops_file is None:
-            ops = json.loads(a.ops)
+            ops = json.loads(a.ops) if a.ops else []
         else:
             with open(a.ops_file, encoding="utf-8") as fh:
                 ops = json.load(fh)
+        if a.template:
+            with open(a.template, encoding="utf-8") as fh:
+                tpl = json.load(fh)
+            if isinstance(tpl, dict):
+                tpl = tpl.get("ops") or []
+            if not isinstance(tpl, list):
+                raise ValueError("--template 需要 ops 数组（或 {\"ops\": […] }）")
+            ops = list(tpl) + list(ops)
+        if a.dpr:
+            ops = annotate.scale_ops(ops, a.dpr)
+            print("dpr: x%g（只缩放坐标，字号/线宽不变）" % a.dpr,
+                  file=sys.stderr)
         stats = {}
         out, backend, pixel_n = annotate_gdi.annotate_png_vector(
             png, ops, stats=stats)
@@ -165,13 +176,72 @@ def _cmd_crop(a):
         return 1
 
 
+def _resize_dir(a):
+    """目录批处理：只处理 .png/.jpg/.jpeg，输出到 --out-dir。"""
+    src = os.path.abspath(a.dir)
+    if not os.path.isdir(src):
+        raise ValueError("--dir 不是目录：%r" % (a.dir,))
+    dst = os.path.abspath(a.out_dir or (src.rstrip("\\/") + "_resized"))
+    os.makedirs(dst, exist_ok=True)
+    fmt = "jpeg" if a.jpg else "png"
+    q = a.jpg or a.quality
+    exts = (".png", ".jpg", ".jpeg")
+    files = sorted(f for f in os.listdir(src)
+                   if os.path.splitext(f)[1].lower() in exts)
+    if not files:
+        raise ValueError("目录里没有 PNG/JPEG：%r" % src)
+    ok = fail = 0
+    used = set()
+    for name in files:
+        ip = os.path.join(src, name)
+        base = os.path.splitext(name)[0]
+        ext = ".jpg" if fmt == "jpeg" else ".png"
+        op = os.path.join(dst, base + ext)
+        n = 1
+        while op in used or os.path.exists(op):   # a.png 与 a.jpg 同名冲突
+            n += 1
+            op = os.path.join(dst, "%s-%d%s" % (base, n, ext))
+        used.add(op)
+        try:
+            with open(ip, "rb") as fh:
+                data, _info = transform.apply(
+                    fh.read(), scale=a.scale, width=a.width,
+                    max_side=a.max_side, fmt=fmt, quality=q)
+            output.save(data, out=op)
+            print(op)
+            ok += 1
+        except Exception as e:  # noqa: BLE001 —— 单张失败不拖垮整批
+            print("✗ %s: %s" % (name, e), file=sys.stderr)
+            fail += 1
+    print("batch: %d 成功 / %d 失败 -> %s" % (ok, fail, dst),
+          file=sys.stderr)
+    return 0 if fail == 0 else 1
+
+
+def _cmd_info(a):
+    try:
+        rec = imageio.info(a.image)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
 def _cmd_resize(a):
-    """只改尺寸（可顺带转 JPEG）。scale/width/max_side 三选一。"""
+    """只改尺寸（可顺带转 JPEG）。scale/width/max_side 三选一。
+
+    --dir 给目录时进入批处理（v0.5.0）：逐张 apply，输出到 --out-dir
+    （缺省 <dir>_resized），每行一个路径；单张失败不中断其余，收尾汇总。
+    """
     try:
         if not (a.scale or a.width or a.max_side):
             raise ValueError("resize 至少给 --scale / --width / --max-side 之一")
-        with open(a.image, "rb") as fh:
-            png = fh.read()
+        if a.dir:
+            return _resize_dir(a)
+        if not a.image:
+            raise ValueError("resize 需要 image 或 --dir")
+        png = imageio.read_png(a.image)
         fmt, q = _want_jpeg(a, a.out)
         out_path = transform.out_path(a.out, a.image, "resized", fmt)
         data, info = transform.apply(
@@ -217,8 +287,7 @@ def _cmd_compose(a):
     t0 = time.time()
     try:
         if a.src:
-            with open(a.src, "rb") as fh:
-                png = fh.read()
+            png = imageio.read_png(a.src)
             shot_info = {"kind": "file", "src": a.src}
         elif a.area:
             r = capture.shot(mode="area", area=_area4(a.area))
@@ -270,8 +339,7 @@ def _cmd_compose(a):
 
 def _cmd_hash(a):
     try:
-        with open(a.image, "rb") as fh:
-            png = fh.read()
+        png = imageio.read_png(a.image)
         rec = vision.digest(png)
         if a.algo:
             rec["value"] = rec.get(a.algo)
@@ -284,10 +352,8 @@ def _cmd_hash(a):
 
 def _cmd_diff(a):
     try:
-        with open(a.a, "rb") as fh:
-            pa = fh.read()
-        with open(a.b, "rb") as fh:
-            pb = fh.read()
+        pa = imageio.read_png(a.a)
+        pb = imageio.read_png(a.b)
         rec = vision.diff(pa, pb, threshold=a.threshold,
                           make_image=bool(a.out))
         img = rec.pop("image", None)
@@ -732,6 +798,12 @@ def main(argv=None):
                    help="JPEG 质量（--out 以 .jpg 结尾且未给 --jpg 时用）")
     s.add_argument("--max-side", dest="max_side", type=int, default=0,
                    help="标注后限制最长边（0=不限）")
+    s.add_argument("--dpr", type=float, default=0,
+                   help="ops 坐标是 CSS 像素时填 devicePixelRatio（如 1.566），"
+                        "只缩放坐标，不缩放字号/线宽（v0.5.0）")
+    s.add_argument("--template", default=None,
+                   help="标注模板 JSON（ops 数组或 {\"ops\": […] }），"
+                        "与内联 ops 合并（v0.5.0）")
     s.set_defaults(func=_cmd_annotate)
 
     def _add_size_args(p):
@@ -760,8 +832,12 @@ def main(argv=None):
     cp.set_defaults(func=_cmd_crop)
 
     rs = sub.add_parser("resize", help="缩放既有图片（可转 JPEG，v0.4.0）")
-    rs.add_argument("image", help="源图 PNG 路径")
+    rs.add_argument("image", nargs="?", default=None, help="源图 PNG/JPEG 路径")
     rs.add_argument("--out", default=None, help="输出路径（缺省 *_resized.png）")
+    rs.add_argument("--dir", default=None,
+                    help="批处理：目录（只收 .png/.jpg/.jpeg，v0.5.0）")
+    rs.add_argument("--out-dir", dest="out_dir", default=None,
+                    help="批处理输出目录（缺省 <dir>_resized）")
     _add_size_args(rs)
     rs.set_defaults(func=_cmd_resize)
 
@@ -832,6 +908,10 @@ def main(argv=None):
         p.add_argument("--index", type=int, default=0, help="第几个 page 标签")
         p.add_argument("--ws", default=None,
                        help="直接给 page 级 ws url（优先于 port/index）")
+
+    inf = sub.add_parser("info", help="图片信息（PNG/JPEG 的尺寸/格式/体积，v0.5.0）")
+    inf.add_argument("image", help="图片路径")
+    inf.set_defaults(func=_cmd_info)
 
     h = sub.add_parser("hash", help="图像指纹（sha256/dhash/ahash，v0.2.7）")
     h.add_argument("image", help="PNG 路径")

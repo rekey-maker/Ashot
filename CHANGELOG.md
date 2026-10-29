@@ -2,6 +2,33 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.5.0] - 2026-10-29
+
+### 新增（补 imgtool 对比后剩下的便利性缺口）
+- **JPEG 输入**：`annotate`/`hash`/`diff`/`compose --src` 现在都吃 PNG **和**
+  JPEG——用已有 GDI+ 转码路（`ashot/imageio.py`）解成 PNG 再进纯 Python
+  解码器；不再出现「自己 `--jpg` 产的文件自己读不了」。
+- **`annotate --dpr`**：ops 坐标按 devicePixelRatio 缩放（CSS→物理像素），
+  与 `element` 返回的 CSS 矩形直接闭环；只缩放坐标，不缩放字号/线宽。
+- **`annotate --template`**：模板 JSON（ops 数组或 `{"ops": […]}`）与内联
+  ops 合并，常用标注可复用。
+- **`info` 命令**：PNG/JPEG 的 `{format,w,h,bytes,path}`（JSON）。
+- **`resize --dir/--out-dir`**：目录批处理（只收 .png/.jpg/.jpeg），单张
+  失败不拖垮整批；同名不同扩展自动加 `-2` 后缀，不互相覆盖。
+- **MCP**：`ashot_annotate` 增加 `dpr`。
+
+### 修复
+- **transform 的 JPEG 冒充 PNG**（审查发现）：`apply(jpeg, fmt="png")` 在无
+  裁切/缩放时走「原样返回」快路径，会把 JPEG 字节当 PNG 交付（扩展名
+  .png、内容 JPEG）。现在快路径要求源本身是 PNG。
+- 批处理同名冲突：`a.png` 与 `a.jpg` 都输出 `a.png` 会互相覆盖，改为
+  `a-2.png`。
+
+### 测试
+- 新增 7 项：JPEG→PNG 归一化、passthrough 修复、`scale_ops`、CLI
+  annotate JPEG+dpr、CLI hash JPEG、CLI info、CLI resize 批处理。
+  全套 **167 项**通过。
+
 ## [0.4.2] - 2026-10-29
 
 ### 开源

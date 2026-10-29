@@ -236,7 +236,10 @@ def apply(src, crop=None, scale=None, width=None, max_side=None,
     if warns:
         info["bounds_warn"] = warns
     # 原样返回（无裁切/无缩放/PNG）：省一次进程，且像素零损失
-    if cbox is None and factor == 1.0 and fmt == "png":
+    if (cbox is None and factor == 1.0 and fmt == "png"
+            and bytes(src[:8]) == b"\x89PNG\r\n\x1a\n"):
+        # v0.5.0：旧实现只判 fmt，JPEG 输入会被原样当 PNG 交出去
+        # （扩展名 .png、内容是 JPEG）；现在必须源本身是 PNG 才零拷贝。
         info["engine"] = "passthrough"
         info["bytes"] = len(src)
         info["ms"] = int((time.time() - t0) * 1000)

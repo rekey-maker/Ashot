@@ -463,6 +463,54 @@ def _decode_png(png):
 
 # ---------- C 形态入口：JSON ops 批量标注 ----------
 
+_GEOM_KEYS = ("x", "y", "w", "h", "x1", "y1", "x2", "y2",
+              "x0", "y0", "c1x", "c1y", "c2x", "c2y")
+
+
+def scale_ops(ops, factor):
+    """把 ops 里的坐标按 factor 缩放（v0.5.0，CSS 像素 -> 物理像素）。
+
+    只缩放**坐标**，不缩放字号/线宽/块大小/圆角（与 imgtool 的
+    `--from-css` 口径一致；要物理字号就自己给像素值）。
+    `polyline` 的 points/coords 一并缩放；未知字段原样保留。
+    """
+    try:
+        k = float(factor)
+    except (TypeError, ValueError):
+        raise ValueError("dpr 需要数字：%r" % (factor,))
+    if k <= 0:
+        raise ValueError("dpr 必须 > 0：%r" % (factor,))
+    if not isinstance(ops, list):
+        raise ValueError("ops 需要数组：%r" % (type(ops).__name__,))
+    out = []
+    for op in ops:
+        if not isinstance(op, dict):
+            raise ValueError("每个 op 需要对象：%r" % (op,))
+        o = dict(op)
+        for key in _GEOM_KEYS:
+            v = o.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                o[key] = v * k
+        pts = o.get("points")
+        if isinstance(pts, list) and pts:
+            try:
+                o["points"] = [[float(p[0]) * k, float(p[1]) * k] for p in pts]
+            except (TypeError, IndexError, ValueError):
+                raise ValueError("points 需要 [[x,y],…]：%r" % (pts,))
+        coords = o.get("coords")
+        if isinstance(coords, str) and coords.strip():
+            vals = [v for v in coords.replace(" ", ",").split(",") if v.strip()]
+            try:
+                nums = [float(v) * k for v in vals]
+            except ValueError:
+                raise ValueError("coords 需要逗号分隔的数字：%r" % (coords,))
+            if len(nums) % 2:
+                raise ValueError("coords 数字个数必须成对：%r" % (coords,))
+            o["coords"] = ",".join("%g" % v for v in nums)
+        out.append(o)
+    return out
+
+
 def annotate_png(png_bytes, ops):
     """对 PNG 字节执行 ops（JSON 数组）-> 新 PNG 字节。
 
