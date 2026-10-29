@@ -465,14 +465,43 @@ def _decode_png(png):
 
 _GEOM_KEYS = ("x", "y", "w", "h", "x1", "y1", "x2", "y2",
               "x0", "y0", "c1x", "c1y", "c2x", "c2y")
+_NUM_STR_KEYS = ("area", "coords")   # 逗号串别名（与 _nums 同口径）
+
+
+def _scale_value(v, k):
+    """数值/数字字符串 -> 乘 k；bool/其它原样（字符串坐标在 _nums 里
+    本来就合法，v0.5.1 审查 P1-1：别让它绕过 dpr）。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v * k
+    if isinstance(v, str):
+        try:
+            return float(v) * k
+        except ValueError:
+            return v
+    return v
+
+
+def _scale_csv(text, k):
+    """逗号串（area/coords）逐数缩放，保留足够精度。"""
+    parts = [x for x in str(text).replace(" ", ",").split(",") if x.strip()]
+    try:
+        nums = [float(x) * k for x in parts]
+    except ValueError:
+        raise ValueError("坐标串需要逗号分隔的数字：%r" % (text,))
+    if len(nums) % 2:
+        raise ValueError("坐标串数字个数必须成对：%r" % (text,))
+    return ",".join("%.6g" % v for v in nums)
 
 
 def scale_ops(ops, factor):
-    """把 ops 里的坐标按 factor 缩放（v0.5.0，CSS 像素 -> 物理像素）。
+    """把 ops 里的坐标按 factor 缩放（CSS 像素 -> 物理像素）。
 
-    只缩放**坐标**，不缩放字号/线宽/块大小/圆角（与 imgtool 的
-    `--from-css` 口径一致；要物理字号就自己给像素值）。
-    `polyline` 的 points/coords 一并缩放；未知字段原样保留。
+    v0.5.0 起支持：显式数值键、数字字符串、`area`/`coords` 逗号串、
+    polyline 的 `points`/`coords`；**不缩放** size/width/radius/block/dim。
+    v0.5.1（审查 P1-1/P2-5）：字符串坐标与 area 别名不再绕过缩放；
+    coords 输出小数串，下游 _nums 改 float 解析（不再 int() 崩）。
     """
     try:
         k = float(factor)
@@ -488,25 +517,18 @@ def scale_ops(ops, factor):
             raise ValueError("每个 op 需要对象：%r" % (op,))
         o = dict(op)
         for key in _GEOM_KEYS:
+            if key in o:
+                o[key] = _scale_value(o[key], k)
+        for key in _NUM_STR_KEYS:
             v = o.get(key)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                o[key] = v * k
+            if isinstance(v, str) and v.strip():
+                o[key] = _scale_csv(v, k)
         pts = o.get("points")
         if isinstance(pts, list) and pts:
             try:
                 o["points"] = [[float(p[0]) * k, float(p[1]) * k] for p in pts]
             except (TypeError, IndexError, ValueError):
                 raise ValueError("points 需要 [[x,y],…]：%r" % (pts,))
-        coords = o.get("coords")
-        if isinstance(coords, str) and coords.strip():
-            vals = [v for v in coords.replace(" ", ",").split(",") if v.strip()]
-            try:
-                nums = [float(v) * k for v in vals]
-            except ValueError:
-                raise ValueError("coords 需要逗号分隔的数字：%r" % (coords,))
-            if len(nums) % 2:
-                raise ValueError("coords 数字个数必须成对：%r" % (coords,))
-            o["coords"] = ",".join("%g" % v for v in nums)
         out.append(o)
     return out
 
@@ -555,7 +577,8 @@ def annotate_png(png_bytes, ops):
             if draw_disc:
                 cv.circle_filled(int(op.get("x", 0)), int(op.get("y", 0)),
                                  sz, color)
-            cv.text(int(op.get("x", 0)) + ox, int(op.get("y", 0)) + oy,
+            cv.text(int(round(float(op.get("x", 0)))) + ox,
+                    int(round(float(op.get("y", 0)))) + oy,
                     body, color_body, sz,
                     max_width=int(op.get("w") or 0) or None)
             continue
@@ -617,15 +640,22 @@ def _nums(op, shape):
     if all(op.get(k) is None for k in keys):
         joined = op.get("coords") or op.get("area")
         if isinstance(joined, str):
-            parts = [int(x) for x in joined.replace(" ", "").split(",")]
+            try:
+                parts = [float(x) for x in
+                         str(joined).replace(" ", ",").split(",") if x.strip()]
+            except ValueError:
+                raise ValueError("坐标串需要数字：%r" % (joined,))
             if len(parts) == 4:
-                return parts
+                return [int(round(v)) for v in parts]
     out = []
     for k in keys:
         v = op.get(k)
         if v is None:
             raise ValueError("op 缺坐标键 %s：%r" % (k, op))
-        out.append(int(v))
+        try:
+            out.append(int(round(float(v))))   # 字符串/小数 dpr 都吃
+        except (TypeError, ValueError):
+            raise ValueError("坐标 %s 需要数字：%r" % (k, v))
     return out
 
 

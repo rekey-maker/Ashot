@@ -62,9 +62,15 @@ def read_png(path):
 
 
 def info(path):
-    """图片信息：{format, w, h, bytes, path}（PNG/JPEG）。"""
+    """图片信息：{format, w, h, bytes, path}（PNG/JPEG；其它格式明确报错）。"""
     with open(path, "rb") as fh:
         data = fh.read()
+    fmt = format_of(data)
+    if fmt == "unknown":
+        raise ValueError("不是可识别的图片（只支持 PNG/JPEG）：%r 前 8 字节=%r"
+                         % (str(path), data[:8]))
     w, h = _out.image_size(data) or (0, 0)
-    return {"format": format_of(data), "w": w, "h": h,
+    if not w or not h:
+        raise ValueError("图片尺寸解析失败（文件可能截断）：%d 字节" % len(data))
+    return {"format": fmt, "w": w, "h": h,
             "bytes": len(data), "path": os.path.abspath(path)}

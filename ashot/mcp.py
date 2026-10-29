@@ -159,8 +159,8 @@ def _screens():
 
 
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
-              max_side=0, dpr=0):
-    """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
+              max_side=0, dpr=0.0):
+    """对既有 PNG/JPEG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
     arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
     与箭头同一条原理：Python 采样成点列 → GDI+ 抗锯齿描边。
@@ -179,7 +179,10 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     也自动转，质量取 quality）；max_side>0 = 顺带限制最长边（只缩不放）。
     preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块 + ≤200KB JPEG。
     返回标注后 PNG 绝对路径；out 缺省写 <原名>_annotated.png——绝不覆盖
-    原图（v0.1.5 P1 根修）。"""
+    原图（v0.1.5 P1 根修）。
+    **v0.5.0**：image 支持 PNG/JPEG；**dpr>0 时 ops 坐标按 CSS→物理
+    像素缩放（只缩放坐标，字号/线宽不变，缺省 0=不换算）**；text 的
+    `w`（布局宽）也会被缩放，换行位置可能变。"""
     png = imageio.read_png(str(image))
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
     if dpr:

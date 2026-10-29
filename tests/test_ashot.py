@@ -449,6 +449,10 @@ def test_mcp_tool_schemas():
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview",
                                      "jpg", "quality", "max_side", "dpr"}
+    assert sc["properties"]["dpr"]["type"] == "number", \
+        "v0.5.1：dpr 典型值 1.25/1.566，声明 integer 会让宿主拒参"
+    assert "dpr" in mcp_mod.TOOLS["ashot_annotate"]["description"], \
+        "工具描述必须提到 dpr，否则模型只能猜"
     assert sc["properties"]["preview"]["type"] == "boolean", \
         "v0.2.6 Q13：有 bool 缺省的参数应声明为 boolean"
     # v0.4.0：裁切/缩放两工具（与 CLI 同能力），dpr 必须是 number 不是 integer
@@ -2679,11 +2683,15 @@ def test_annotate_scale_ops_dpr():
     from ashot import annotate
     ops = [{"kind": "rect", "x": 10, "y": 20, "w": 30, "h": 40, "width": 6},
            {"kind": "text", "x": 5, "y": 6, "text": "t", "size": 28},
-           {"kind": "polyline", "coords": "1,2,3,4"}]
+           {"kind": "polyline", "coords": "1,2,3,4"},
+           {"kind": "rect", "area": "10,20,30,40"},
+           {"kind": "rect", "x": "10", "y": "20", "w": "30", "h": "40"}]
     out = annotate.scale_ops(ops, 1.5)
     assert out[0]["x"] == 15 and out[0]["w"] == 45 and out[0]["width"] == 6
     assert out[1]["size"] == 28
     assert out[2]["coords"] == "1.5,3,4.5,6"
+    assert out[3]["area"] == "15,30,45,60"
+    assert out[4]["x"] == 15 and out[4]["h"] == 60
     import pytest as _pytest
     with _pytest.raises(ValueError):
         annotate.scale_ops(ops, 0)
@@ -2726,12 +2734,19 @@ def test_cli_info_png_jpeg(tmp_path):
         rec = json.loads(r.stdout)
         assert (rec["w"], rec["h"]) == want
     assert rec["format"] == "jpeg"
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(b"not an image")
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "info", str(bad)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 1, "info 对非图片必须非零退出"
+    assert "不是可识别" in r.stderr
 
 
 def test_cli_resize_dir_batch(tmp_path):
     src = tmp_path / "in"; src.mkdir()
     (src / "a.png").write_bytes(_solid(200, 100))
-    (src / "a.jpg").write_bytes(_jpeg_of(_solid(120, 60)))   # 同名冲突
+    (src / "a.jpg").write_bytes(_jpeg_of(_solid(120, 40)))   # 同名且不同宽高比
     (src / "b.jpg").write_bytes(_jpeg_of(_solid(100, 80)))
     dst = tmp_path / "out"
     r = subprocess.run([sys.executable, "-m", "ashot.cli", "resize",
@@ -2742,4 +2757,34 @@ def test_cli_resize_dir_batch(tmp_path):
     assert r.returncode == 0, r.stderr
     assert (dst / "a.png").is_file() and (dst / "b.png").is_file()
     assert (dst / "a-2.png").is_file(), "同名不同扩展不能互相覆盖"
-    assert output.image_size((dst / "a.png").read_bytes()) == (50, 25)
+    sizes = {p.name: output.image_size(p.read_bytes())
+             for p in dst.iterdir() if p.is_file()}
+    # 排序后 a.jpg 先进，占 a.png（50x17）；a.png 落到 a-2.png（50x25）
+    assert sizes["a.png"] == (50, 17)
+    assert sizes["a-2.png"] == (50, 25)
+
+    # 重跑：应覆盖旧产物，而不是继续 -2/-3 堆陈图
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "resize",
+                        "--dir", str(src), "--out-dir", str(dst),
+                        "--max-side", "40"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    assert not (dst / "a-3.png").exists(), "重跑不该堆新后缀"
+    assert output.image_size((dst / "a.png").read_bytes()) == (40, 13)
+    assert output.image_size((dst / "a-2.png").read_bytes()) == (40, 20)
+
+
+def test_cli_resize_dir_failure_keeps_going(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    (src / "good.png").write_bytes(_solid(60, 30))
+    (src / "bad.jpg").write_bytes(b"\xff\xd8broken")
+    dst = tmp_path / "out"
+    r = subprocess.run([sys.executable, "-m", "ashot.cli", "resize",
+                        "--dir", str(src), "--out-dir", str(dst),
+                        "--max-side", "30"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", cwd=ROOT)
+    assert r.returncode == 1, "有失败必须非零退出"
+    assert (dst / "good.png").is_file(), "单张失败不拖垮其余"
+    assert "1 成功 / 1 失败" in r.stderr

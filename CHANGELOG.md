@@ -2,6 +2,29 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.5.1] - 2026-10-29
+
+### 审查修复（v0.5.0 两路子 agent 只读审查）
+- **P1 dpr 对字符串坐标 / `area` 别名静默不缩放**：`scale_ops` 现在处理
+  数字字符串与 `area`/`coords` 逗号串；`coords` 输出小数串，`annotate._nums`
+  与 `vector._nums` 改 float 解析（旧 `int("15.66")` 直接崩）。
+- **P1 `info` 对非 PNG/JPEG 静默返回 0×0 且 exit 0**：改为明确报错、退出码 1。
+- **P1 MCP `ashot_annotate.dpr` 被声明成 integer**：改 `0.0` → `number`，
+  工具描述补 dpr 语义（只缩放坐标，字号/线宽不变；text 的 `w` 也会缩放）。
+- **`annotate` 无 ops/template 静默输出原图副本**：改为报错。
+- **`--template` 对象缺 `ops` 键静默变空模板**：改为报错；模板在前、内联
+  在后（设计文档写明）。
+- **`resize --dir` 重跑留陈图**：只对同批去重，重跑覆盖旧产物；`--dir` 与
+  `--out` 互斥、单图 `--out-dir` 报错；非法尺寸进批前校验一次。
+- **`--clip` 提示打到 stdout**：改 stderr（stdout 只留路径）。
+- 文档：README 版本/命令数/测试数（118/30/19）与 0.4.0 旧行、MCP 表补
+  eval/view；CLI `--help` 的「只吃 PNG」；SKILL「完全同能力」；设计索引排序。
+
+### 测试
+- **168 项全绿**（新增/加强：dpr 像素 bbox 实测、area/字符串坐标缩放、
+  info 非图报错、模板数组/对象/坏格式、无 ops 报错、批量失败不中断、
+  重跑覆盖、同名不同宽高比）。
+
 ## [0.5.0] - 2026-10-29
 
 ### 新增（补 imgtool 对比后剩下的便利性缺口）

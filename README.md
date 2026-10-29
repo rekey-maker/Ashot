@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.5.0**，MCP 22 个工具、24 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.5.1**，MCP 22 个工具、24 个 CLI 子命令，**MIT 开源**。
 
 ## 安装与要求
 
@@ -68,7 +68,8 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `ashot_cdp_dblclick` + `ashot_cdp_type`（v0.2.3）/ `ashot_cdp_eval` +
   `ashot_cdp_view`（v0.2.5）/ `ashot_hash` + `ashot_diff` +
   `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8）/ `ashot_crop` + `ashot_resize`
-  （v0.4.0，裁切/缩放/JPEG），与 CLI 同能力；每个收据带 `ver`（识破旧进程）
+  （v0.4.0，裁切/缩放/JPEG）。**22 工具覆盖 CLI 的主要能力；
+  `compose`/`info` 仅 CLI**；每个收据带 `ver`（识破旧进程）
 
 ## 用法
 
@@ -102,14 +103,15 @@ python -m ashot.cli compose --area 100 100 1200 800 --box 0,0,900,600 \
 
 ## MCP 接入
 
-stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（每个收据
+stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具（覆盖 CLI 主要能力；
+`compose`/`info` 仅 CLI）：每个收据
 都带 `ver`——文件版本号对了但进程还是旧的，一眼识破；v0.2.6 起）：
 
 | 工具 | 作用 |
 |---|---|
 | `ashot_shot` | 截图（full/screen/win/area；**v0.4.0 起可传 `scale`/`max_side`/`jpg`/`quality`——截完直接缩放/转 JPEG**；收据带 `all_black` 黑帧自检、`box_source` 区域来源、`gdi_error` 降级原因；v0.2.6 起 `preview` **缺省 true**，附 ≤200KB JPEG 缩图 ImageContent） |
 | `ashot_crop` / `ashot_resize` | 裁切 / 缩放 / 转 JPEG（v0.4.0；crop 的 box 是 **x,y,w,h**，dpr 传 CSS 坐标换算，越界进 `bounds_warn`） |
-| `ashot_annotate` | JSON ops 批量标注（收据带 `backend`/`pixel_ops`/`bounds_warn` 越界告警/`degrade_reason` 降级原因；text 可带 `w` 自动换行；preview 缺省 true） |
+| `ashot_annotate` | JSON ops 批量标注（PNG/JPEG；`dpr` 换算 CSS 坐标；收据带 `backend`/`pixel_ops`/`bounds_warn`/`degrade_reason`；text 可带 `w` 自动换行；preview 缺省 true） |
 | `ashot_screens` | 列显示器 |
 | `ashot_fonts` | 列已装字体族（text 的 font 先查后用；v0.1.10 起） |
 | `ashot_show` | 图片→数据 URL 内嵌 HTML（用户可见展示；v0.1.12 起） |
@@ -117,6 +119,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 | `ashot_element` / `ashot_frames` / `ashot_frame_element` | 元素视口矩形+可见性 / frame 树 / iframe 内元素映射（v0.2.7） |
 | `ashot_cdp_tabs` | 列 CDP 浏览器 page 标签页（自动发现端口；v0.2.0 起） |
 | `ashot_cdp_shot` | CDP 标签页截图（无头/有头通吃，全页；v0.2.0 起） |
+| `ashot_cdp_eval` / `ashot_cdp_view` | 执行 JS 取值 / 视口信息（vw/vh/dpr；v0.2.5） |
 | `ashot_cdp_key` / `ashot_cdp_wheel` / `ashot_cdp_click` / `ashot_cdp_drag` / `ashot_cdp_dblclick` / `ashot_cdp_type` | 浏览器操作：按键/组合键、滚轮、单击（人类化轨迹）、拖拽（人类化轨迹）、双击、整段填表（v0.2.1-0.2.5 起；v0.2.5 加 eval/view 与节奏档） |
 
 注册到宿主（示例为 ZCode 的 `mcp.servers.ashot`；路径基准=本文件
@@ -146,7 +149,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 python -m pytest tests/ -q
 ```
 
-167 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+168 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -195,9 +198,9 @@ ashot/
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
-├── tests/test_ashot.py         # 111 项（v0.4.0 前的回归锁）
-└── tests/test_transform.py     # 30 项（v0.4.0 裁切/缩放/JPEG）
-├── tests/test_shapes.py      # 12 项（v0.4.1 曲线/弧线/折线）
+├── tests/test_ashot.py         # 118 项（主回归锁）
+├── tests/test_transform.py     # 30 项（裁切/缩放/JPEG）
+└── tests/test_shapes.py        # 19 项（曲线/弧线/折线）
 ```
 
 ## 许可证
@@ -208,4 +211,5 @@ ashot/
 
 - 版本史：[CHANGELOG.md](CHANGELOG.md)；设计文档索引：[docs/design/README.md](docs/design/README.md)
 - 审查与修复证据：[docs/review/](docs/review/)
-- 当前 0.4.0：新增裁切/缩放/JPEG 交付（`crop`/`resize`/`compose`）；功能面同 0.3.0 其余不变
+- 当前 0.5.1：JPEG 输入、`annotate --dpr/--template`、`info`、`resize --dir`；
+  并修复 v0.5.0 审查发现的问题（见 CHANGELOG）

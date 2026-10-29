@@ -42,7 +42,11 @@ def _nums(op, keys):
     if all(op.get(k) is None for k in keys):
         joined = op.get("coords") or op.get("area")
         if isinstance(joined, str):
-            parts = [int(x) for x in str(joined).replace(" ", "").split(",")]
+            try:
+                parts = [float(x) for x in
+                         str(joined).replace(" ", ",").split(",") if x.strip()]
+            except ValueError:
+                raise ValueError("坐标串需要数字：%r" % (joined,))
             if len(parts) == 4:
                 return parts
     out = []

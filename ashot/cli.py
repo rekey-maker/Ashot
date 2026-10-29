@@ -88,7 +88,7 @@ def _cmd_shot(a):
         if not output.clip_png(png):
             print("✗ 剪贴板写入失败", file=sys.stderr)
             return 1
-        print("已进剪贴板（未落盘）")
+        print("已进剪贴板（未落盘）", file=sys.stderr)
         return 0
     if a.scale or a.max_side or fmt == "jpeg":
         png, info = transform.apply(png, scale=a.scale, max_side=a.max_side,
@@ -118,14 +118,21 @@ def _cmd_annotate(a):
         else:
             with open(a.ops_file, encoding="utf-8") as fh:
                 ops = json.load(fh)
+        if not ops and not a.template:
+            raise ValueError("annotate 需要 ops（内联或 --ops-file）或 --template")
         if a.template:
             with open(a.template, encoding="utf-8") as fh:
                 tpl = json.load(fh)
             if isinstance(tpl, dict):
-                tpl = tpl.get("ops") or []
+                if "ops" not in tpl:
+                    raise ValueError("--template 的对象形式必须含 ops 键：%r"
+                                     % (a.template,))
+                tpl = tpl["ops"]
             if not isinstance(tpl, list):
                 raise ValueError("--template 需要 ops 数组（或 {\"ops\": […] }）")
             ops = list(tpl) + list(ops)
+        if not ops:
+            raise ValueError("annotate 合并后 ops 为空（模板/内联都没给标注）")
         if a.dpr:
             ops = annotate.scale_ops(ops, a.dpr)
             print("dpr: x%g（只缩放坐标，字号/线宽不变）" % a.dpr,
@@ -176,6 +183,14 @@ def _cmd_crop(a):
         return 1
 
 
+def _check_size_args(a):
+    """进批/单张之前先把非法尺寸挡掉（别按文件重复报错）。"""
+    for name in ("scale", "width", "max_side"):
+        v = getattr(a, name, 0) or 0
+        if v and float(v) <= 0:
+            raise ValueError("--%s 必须 > 0：%r" % (name.replace("_", "-"), v))
+
+
 def _resize_dir(a):
     """目录批处理：只处理 .png/.jpg/.jpeg，输出到 --out-dir。"""
     src = os.path.abspath(a.dir)
@@ -198,7 +213,7 @@ def _resize_dir(a):
         ext = ".jpg" if fmt == "jpeg" else ".png"
         op = os.path.join(dst, base + ext)
         n = 1
-        while op in used or os.path.exists(op):   # a.png 与 a.jpg 同名冲突
+        while op in used:   # 只处理同批撞名；重跑要覆盖旧产物（审查 P2-6）
             n += 1
             op = os.path.join(dst, "%s-%d%s" % (base, n, ext))
         used.add(op)
@@ -237,8 +252,13 @@ def _cmd_resize(a):
     try:
         if not (a.scale or a.width or a.max_side):
             raise ValueError("resize 至少给 --scale / --width / --max-side 之一")
+        _check_size_args(a)
         if a.dir:
+            if a.out:
+                raise ValueError("--dir 与 --out 不能同时使用（批处理请用 --out-dir）")
             return _resize_dir(a)
+        if a.out_dir:
+            raise ValueError("--out-dir 只能和 --dir 一起用")
         if not a.image:
             raise ValueError("resize 需要 image 或 --dir")
         png = imageio.read_png(a.image)
@@ -785,8 +805,8 @@ def main(argv=None):
     s.add_argument("--keep", action="store_true", help="本次跳过 retention 清理")
     s.set_defaults(func=_cmd_shot)
 
-    s = sub.add_parser("annotate", help="对既有 PNG 标注（C 形态）")
-    s.add_argument("image", help="PNG 路径")
+    s = sub.add_parser("annotate", help="对既有 PNG/JPEG 标注（C 形态）")
+    s.add_argument("image", help="PNG/JPEG 路径")
     s.add_argument("ops", nargs="?", default=None, help='ops JSON（如 '
                    '"[{\\"kind\\":\\"rect\\",\\"x\\":10,\\"y\\":10,'
                    '\\"w\\":100,\\"h\\":50}]"）')
@@ -820,7 +840,7 @@ def main(argv=None):
                        help="JPEG 质量（--out 以 .jpg 结尾且未给 --jpg 时用）")
 
     cp = sub.add_parser("crop", help="裁切既有图片（可顺带缩放/转 JPEG，v0.4.0）")
-    cp.add_argument("image", help="源图 PNG 路径")
+    cp.add_argument("image", help="源图 PNG/JPEG 路径")
     cp.add_argument("--box", required=True,
                     help="裁切区域 **x,y,w,h**（左上角+宽高；"
                          "**不是** x1,y1,x2,y2）")
@@ -913,14 +933,14 @@ def main(argv=None):
     inf.add_argument("image", help="图片路径")
     inf.set_defaults(func=_cmd_info)
 
-    h = sub.add_parser("hash", help="图像指纹（sha256/dhash/ahash，v0.2.7）")
-    h.add_argument("image", help="PNG 路径")
+    h = sub.add_parser("hash", help="图像指纹（sha256/dhash/ahash；PNG/JPEG，v0.2.7）")
+    h.add_argument("image", help="PNG/JPEG 路径")
     h.add_argument("--algo", default=None,
                    choices=["sha256", "dhash", "ahash"],
                    help="只取某一个值（收据仍含全部指纹）")
     h.set_defaults(func=_cmd_hash)
 
-    df = sub.add_parser("diff", help="两张 PNG 差异（YIQ+阈值，v0.2.7）")
+    df = sub.add_parser("diff", help="两张图差异（YIQ+阈值；PNG/JPEG，v0.2.7）")
     df.add_argument("a", help="图 A")
     df.add_argument("b", help="图 B")
     df.add_argument("--threshold", type=float, default=0.12,
