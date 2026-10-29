@@ -29,6 +29,12 @@ def _colors(png):
     return {(px[i], px[i + 1], px[i + 2]) for i in range(0, len(px), 4)}
 
 
+def _px_at(png, x, y):
+    w, _, px = annotate._decode_png(png)
+    i = (y * w + x) * 4
+    return (px[i], px[i + 1], px[i + 2])
+
+
 # ---------- 几何 ----------
 
 def test_bezier_endpoints_and_steps():
@@ -56,9 +62,12 @@ def test_arc_direction_and_clamp():
     # 逆时针：sweep 负值 → -90° 落在最上（x 回到圆心 50，y 到 0）
     neg = geometry.arc_points(0, 0, 100, 100, 0, -90, steps=2)
     assert abs(neg[-1][0] - 50) < 1e-9 and abs(neg[-1][1]) < 1e-9, "-90° 到最上"
-    # 超过一圈夹到 360；sweep=0 报错（没有可画的弧）
-    full = geometry.arc_points(0, 0, 100, 100, 0, 720, steps=4)
-    assert len(full) == 5
+    # 超过一圈夹到 360（**默认步数**才走 clamp 分支：720° 不夹会要 360° 的
+    # 两倍步数；夹后 = 180 段 → 181 点，且首尾重合）
+    full = geometry.arc_points(0, 0, 100, 100, 0, 720)
+    assert len(full) == 181, len(full)
+    assert abs(full[0][0] - full[-1][0]) < 1e-6
+    assert abs(full[0][1] - full[-1][1]) < 1e-6
     with pytest.raises(ValueError):
         geometry.arc_points(0, 0, 100, 100, 0, 0)
     with pytest.raises(ValueError):
@@ -96,6 +105,22 @@ def test_non_finite_rejected():
                             "sweep": float("nan")})
     with pytest.raises(ValueError):
         geometry.polyline_points([[0, 0], [float("inf"), 1]])
+
+
+def test_coord_range_guard_and_clip_segment():
+    """有限但超范围的坐标必须入口报错：否则 PS 单精度变 Infinity、
+    像素降级路 int(round(inf)) 抛 OverflowError（审查 P1-2/P1-3/P2-4）。"""
+    with pytest.raises(ValueError):
+        geometry.bezier_points(0, 0, 1e308, 0, 0, 0, 1, 1)
+    with pytest.raises(ValueError):
+        geometry.arc_points(1e308, 0, 1e308, 1e308, 0, 90)
+    with pytest.raises(ValueError):
+        geometry.polyline_points([[0, 0], [1e9, 1]])
+    # 线段裁剪：整段在外 -> None；跨边界 -> 夹到画布；完全在内 -> 原样
+    assert geometry.clip_segment(200, 200, 300, 300, 100, 100) is None
+    assert geometry.clip_segment(-10, -10, 20, 20, 100, 100) == (0.0, 0.0, 20, 20)
+    assert geometry.clip_segment(-100, 50, 200, 50, 100, 100) == \
+        (0.0, 50.0, 100.0, 50.0)
 
 
 def test_parse_arc_and_polyline_forms():
@@ -182,15 +207,46 @@ def test_vector_render_is_antialiased():
     assert (0x00, 0xE5, 0xFF) in cols and (0xFF, 0x95, 0x00) in cols
 
 
+def test_curve_is_curved_not_a_chord():
+    """证伪「用弦糊弄」：弧顶必须出墨、弦中点必须是背景。
+
+    弯成 U 形的曲线：B(0.5)=(135,55)，弦中点=(150,160)，相距 100+px——
+    只画直线/弦的实现会在弦中点出墨、弧顶空着。
+    """
+    ops = [{"kind": "curve", "x0": 20, "y0": 160, "c1x": 80, "c1y": 20,
+            "c2x": 180, "c2y": 20, "x1": 280, "y1": 160, "width": 5,
+            "color": "#00E5FF"}]
+    out, _, _ = annotate_gdi.annotate_png_vector(_bg(), ops)
+    assert _px_at(out, 135, 55) != (0x20, 0x20, 0x20), "弧顶没出墨"
+    assert _px_at(out, 150, 160) == (0x20, 0x20, 0x20), "弦中点出墨=画成了直线"
+
+
 def test_pixel_fallback_draws_same_shapes():
     out = annotate.annotate_png(_bg(), _SHAPES)
     cols = _colors(out)
     assert (0x00, 0xE5, 0xFF) in cols, "像素路也要有曲线颜色"
     assert (0xFF, 0x95, 0x00) in cols, "像素路也要有弧线颜色"
     assert (0x07, 0xC1, 0x60) in cols, "像素路也要有折线颜色"
-    # 像素路是硬边：颜色数应显著少于矢量路
-    vec, _, _ = annotate_gdi.annotate_png_vector(_bg(), _SHAPES)
-    assert len(cols) < len(_colors(vec))
+
+
+def test_both_paths_share_sampling(monkeypatch):
+    """契约 1 的真锁：两路必须调用**同一个** geometry.bezier_points。
+
+    （旧写法「像素路颜色数更少」是恒真式——硬边画布画什么都少。）
+    """
+    calls = []
+    orig = geometry.bezier_points
+
+    def counted(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(geometry, "bezier_points", counted)
+    ops = [{"kind": "curve", "x0": 20, "y0": 160, "c1x": 80, "c1y": 20,
+            "c2x": 180, "c2y": 220, "x1": 280, "y1": 80, "width": 5}]
+    annotate_gdi.annotate_png_vector(_bg(), ops)
+    annotate.annotate_png(_bg(), ops)
+    assert len(calls) == 2, "两路没有共用同一套采样（calls=%d）" % len(calls)
 
 
 def test_curve_out_of_canvas_warns():

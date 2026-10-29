@@ -509,8 +509,11 @@ def annotate_png(png_bytes, ops):
             else:
                 pts = geometry.polyline_points(geometry.parse_polyline(op))
             for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-                cv.line(int(round(ax)), int(round(ay)),
-                        int(round(bx)), int(round(by)), color, width)
+                seg = geometry.clip_segment(ax, ay, bx, by, cv.w - 1, cv.h - 1)
+                if seg is None:
+                    continue        # 整段在画布外：不跑 Bresenham（审查 P2-4）
+                cv.line(int(round(seg[0])), int(round(seg[1])),
+                        int(round(seg[2])), int(round(seg[3])), color, width)
             continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")

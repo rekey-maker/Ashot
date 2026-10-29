@@ -32,6 +32,9 @@ def bezier_points(x0, y0, c1x, c1y, c2x, c2y, x1, y1, steps=None):
 
     自适应步数：按控制多边形长度 / BEZ_PX_PER_STEP，夹在 16~128。
     """
+    x0, y0, c1x, c1y, c2x, c2y, x1, y1 = (
+        _finite(x0), _finite(y0), _finite(c1x), _finite(c1y),
+        _finite(c2x), _finite(c2y), _finite(x1), _finite(y1))
     if steps is None:
         poly = (math.hypot(c1x - x0, c1y - y0)
                 + math.hypot(c2x - c1x, c2y - c1y)
@@ -56,9 +59,11 @@ def arc_points(x, y, w, h, start_deg=0.0, sweep_deg=360.0, steps=None):
     与 GDI+ 一致（从 x 轴顺时针，屏幕 y 向下）。
     sweep<0 = 逆时针；|sweep|>360 夹到 360（GDI+ 也不画超过一圈）。
     """
+    x, y, w, h = _finite(x), _finite(y), _finite(w), _finite(h)
+    start_deg = _finite(start_deg, "start")
+    sweep = _finite(sweep_deg, "sweep")
     if w <= 0 or h <= 0:
         raise ValueError("arc 宽高须 > 0（got w=%r h=%r）" % (w, h))
-    sweep = float(sweep_deg)
     if sweep == 0:
         raise ValueError("arc 的 sweep 不能为 0（没有可画的弧）")
     sweep = max(-360.0, min(360.0, sweep))
@@ -99,11 +104,23 @@ def pad_points(pts):
 
 # ---------- op 解析（矢量路与像素路共用同一套 schema 解析） ----------
 
+COORD_LIMIT = 1e7      # 坐标上限：图像维度远小于此，超限必然派生 inf/溢出
+
+
 def _finite(v, what="坐标"):
-    """转 float 并拒绝 NaN/inf：非有限值会一路传进 PS 变成"画不出也不报错"。"""
+    """转 float，拒绝 NaN/inf 与超范围值。
+
+    只查 isfinite 不够：1e308 级的**有限**坐标在 `cx + a*cos`、控制多边形
+    求和时照样溢出成 inf，再一路传到 PS（JSON 出 Infinity、PS 单精度变
+    Infinity），最后在像素降级路 `int(round(inf))` 抛 OverflowError——
+    不是契约要求的 ValueError。所以在入口就把 |v| 夹到合理范围。
+    """
     f = float(v)
     if not math.isfinite(f):
         raise ValueError("%s 必须是有限数：%r" % (what, v))
+    if abs(f) > COORD_LIMIT:
+        raise ValueError("%s 超出合理范围（|v| ≤ %g）：%r"
+                         % (what, COORD_LIMIT, v))
     return f
 
 
@@ -174,3 +191,51 @@ def parse_polyline(op):
     raise ValueError("polyline 需要 points=[[x,y],...] 或 coords=\"x1,y1,x2,y2,...\"：%r"
                      % (op,))
 
+
+
+def clip_segment(x0, y0, x1, y1, w, h):
+    """把线段裁到画布 [0,w]×[0,h]；完全在外返回 None。
+
+    像素降级路按 Bresenham 逐像素走，若线段从画布外很远处穿过，会白跑
+    几百万步（审查 P2-4）。先裁再画即可。
+    """
+    left, right, bottom, top = 1, 2, 4, 8
+
+    def code(x, y):
+        c = 0
+        if x < 0:
+            c |= left
+        elif x > w:
+            c |= right
+        if y < 0:
+            c |= top
+        elif y > h:
+            c |= bottom
+        return c
+
+    c0, c1 = code(x0, y0), code(x1, y1)
+    for _ in range(8):                 # 最多 4 次求交，8 轮足够
+        if not (c0 | c1):
+            return (x0, y0, x1, y1)
+        if c0 & c1:
+            return None
+        c = c0 or c1
+        if c & top:
+            x = x0 + (x1 - x0) * (0.0 - y0) / (y1 - y0)
+            y = 0.0
+        elif c & bottom:
+            x = x0 + (x1 - x0) * (h - y0) / (y1 - y0)
+            y = float(h)
+        elif c & left:
+            y = y0 + (y1 - y0) * (0.0 - x0) / (x1 - x0)
+            x = 0.0
+        else:
+            y = y0 + (y1 - y0) * (w - x0) / (x1 - x0)
+            x = float(w)
+        if c == c0:
+            x0, y0 = x, y
+            c0 = code(x0, y0)
+        else:
+            x1, y1 = x, y
+            c1 = code(x1, y1)
+    return None

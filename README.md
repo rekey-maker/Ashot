@@ -140,7 +140,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 python -m pytest tests/ -q
 ```
 
-155 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+158 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与

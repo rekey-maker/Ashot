@@ -17,9 +17,15 @@
   GDI+ 内部同样把曲线展平成折线；DrawArc 的角度制/顺时针/start+sweep
   与我们的参数方程一致。
 
+### 审查修复（子 agent 只读审查，2026-10-29）
+- **P1**：有限但超范围的坐标（如 1e308）会在采样里派生 inf → JSON `Infinity` → PS 失败降级 → `int(round(inf))` 抛 OverflowError。现在 `geometry._finite` 统一限制 `|v| ≤ 1e7`，`bezier_points`/`arc_points` 入口自校验（含 NaN sweep 不再被 min/max 静默夹成 360°）。
+- **P2**：像素降级路先做 Cohen–Sutherland 线段裁剪（`clip_segment`），画布外的远点不再白跑百万步 Bresenham。
+- **测试补强**（原三条是假绿）：弧 720° 夹取改用默认步数（181 点、首尾重合）；抗锯齿测试改为「弧顶出墨 + 弦中点必须背景」（能区分曲线与弦）；新增 `test_both_paths_share_sampling`（monkeypatch 计数，锁死两路共用同一套采样）。
+- 审查另报的「降级路 stroke 无 bbox → 越界静默」经复测**不成立**：`_shape_boxes` 本就按采样点算 stroke 的 bbox，降级路照样产出 `bounds_warn`（已加实测）。
+
 ### 测试
-- 新增 `tests/test_shapes.py` 14 项（端点/对称/方向/夹取/三种写法/
-  抗锯齿中间色/像素路同图/越界告警/CLI 端到端）。全套 **155 项**通过。
+- 新增 `tests/test_shapes.py` 17 项（端点/对称/方向/夹取/三种写法/
+  抗锯齿中间色/像素路同图/越界告警/CLI 端到端）。全套 **158 项**通过。
 
 ## [0.4.0] - 2026-10-29
 
