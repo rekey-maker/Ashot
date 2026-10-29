@@ -431,7 +431,8 @@ def test_mcp_tool_schemas():
                                   "ashot_cdp_wheel", "ashot_cdp_click",
                                   "ashot_cdp_drag", "ashot_cdp_dblclick",
                                   "ashot_cdp_type", "ashot_cdp_view",
-                                  "ashot_cdp_eval"}
+                                  "ashot_cdp_eval", "ashot_crop",
+                                  "ashot_resize"}
     for nm, props in (
             ("ashot_cdp_click", {"x", "y", "button", "human", "seed",
                                  "port", "index", "ws", "timing",
@@ -446,13 +447,30 @@ def test_mcp_tool_schemas():
         assert set(mcp_mod.TOOLS[nm]["inputSchema"]["properties"]) == props, nm
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
-    assert set(sc["properties"]) == {"image", "ops", "out", "preview"}
+    assert set(sc["properties"]) == {"image", "ops", "out", "preview",
+                                     "jpg", "quality", "max_side"}
     assert sc["properties"]["preview"]["type"] == "boolean", \
         "v0.2.6 Q13：有 bool 缺省的参数应声明为 boolean"
+    # v0.4.0：裁切/缩放两工具（与 CLI 同能力），dpr 必须是 number 不是 integer
+    cr = mcp_mod.TOOLS["ashot_crop"]["inputSchema"]
+    assert cr["required"] == ["image", "box"], cr["required"]
+    assert set(cr["properties"]) == {"image", "box", "out", "scale", "width",
+                                     "max_side", "jpg", "quality", "dpr",
+                                     "preview"}
+    assert cr["properties"]["dpr"]["type"] == "number"
+    assert cr["properties"]["scale"]["type"] == "number", \
+        "scale 是倍率（1.2/0.5），声明成 integer 会让宿主校验把小数挡掉"
+    assert cr["properties"]["box"]["type"] == "string"
+    rz = mcp_mod.TOOLS["ashot_resize"]["inputSchema"]
+    assert rz["required"] == ["image"]
+    assert set(rz["properties"]) == {"image", "out", "scale", "width",
+                                     "max_side", "jpg", "quality", "preview"}
     ss = mcp_mod.TOOLS["ashot_shot"]["inputSchema"]
     assert set(ss["properties"]) == {"mode", "screen", "out", "clip",
                                      "keep", "area", "retention_days",
-                                     "preview"}
+                                     "preview", "scale", "max_side",
+                                     "jpg", "quality"}
+    assert ss["properties"]["scale"]["type"] == "number"
     assert ss["properties"]["preview"]["type"] == "boolean"
     assert ss["properties"]["clip"]["type"] == "boolean"
     # 无缺省值的参数仍按 string 声明（工具内自转型）

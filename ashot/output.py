@@ -70,25 +70,28 @@ def default_dir():
 _NAME_SEQ = 0
 
 
-def _default_name():
+def _default_name(ext=".png"):
     """缺省文件名：秒级时间戳 + 进程内单调序号。纯秒级命名同秒连截两张
     会同名静默覆盖（v0.1.5 审查实锤）；时钟尾数防撞不行——Windows 时钟
-    粒度粗，连续两次 time_ns 同值（测试实锤），序号才是严格唯一。"""
+    粒度粗，连续两次 time_ns 同值（测试实锤），序号才是严格唯一。
+    v0.4.0：ext 可换——`shot --jpg` 的缺省名必须落 .jpg，别把 JPEG 写进
+    .png 壳里。"""
     global _NAME_SEQ
     _NAME_SEQ += 1
-    return time.strftime("shot_%Y%m%d_%H%M%S") + "_%04d.png" % _NAME_SEQ
+    return (time.strftime("shot_%Y%m%d_%H%M%S")
+            + "_%04d" % _NAME_SEQ + ext)
 
 
-def save(png_bytes, out=None):
-    """PNG 落盘。out=None 时缺省目录+时间戳命名；out 是目录（或无扩展名
-    路径）则**在其中**生成缺省文件名（v0.1.5 P2 根修：旧实现无视传入
-    目录、悄悄落到缺省目录）。"""
+def save(png_bytes, out=None, ext=".png"):
+    """PNG/JPEG 落盘。out=None 时缺省目录+时间戳命名；out 是目录（或无
+    扩展名路径）则**在其中**生成缺省文件名（v0.1.5 P2 根修：旧实现无视
+    传入目录、悄悄落到缺省目录）。ext 只在走缺省命名时生效。"""
     if out:
         if os.path.isdir(out) or not os.path.splitext(out)[1]:
-            out = os.path.join(out, _default_name())
+            out = os.path.join(out, _default_name(ext))
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     else:
-        out = os.path.join(default_dir(), _default_name())
+        out = os.path.join(default_dir(), _default_name(ext))
     with open(out, "wb") as fh:
         fh.write(png_bytes)
     return out
@@ -157,7 +160,8 @@ def gc(retention_days=RETENTION_DAYS_DEFAULT, keep=False, directory=None):
     cutoff = now - retention_days * 86400
     for name in os.listdir(d):
         f = os.path.join(d, name)
-        if not name.lower().endswith(".png") or not os.path.isfile(f):
+        if not name.lower().endswith((".png", ".jpg", ".jpeg")) \
+                or not os.path.isfile(f):
             continue
         try:
             st = os.stat(f)
@@ -195,17 +199,58 @@ def _png_size(png):
         return None
 
 
+def _jpeg_size(data):
+    """JPEG SOF 段 -> (w, h)；坏数据返回 None（v0.4.0：transform 的 JPEG
+    输出也要能进 preview 梯次，不能只认 PNG）。"""
+    try:
+        i = 2
+        n = len(data)
+        while i + 9 < n:
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            m = data[i + 1]
+            if m in (0xD8, 0xD9) or 0xD0 <= m <= 0xD7 or m == 0x01:
+                i += 2
+                continue
+            seg = (data[i + 2] << 8) | data[i + 3]
+            if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                     0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h = (data[i + 5] << 8) | data[i + 6]
+                w = (data[i + 7] << 8) | data[i + 8]
+                return w, h
+            i += 2 + seg
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def image_size(data):
+    """任意受支持的图片字节 -> (w, h)|None。PNG 走 IHDR、JPEG 走 SOF
+    （v0.4.0：crop/resize 可输出 JPEG，缩图不该只认 PNG）。"""
+    if not data:
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return _png_size(data)
+    if data[:2] == b"\xff\xd8":
+        return _jpeg_size(data)
+    return None
+
+
 def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
                  max_bytes=PREVIEW_MAX_BYTES_DEFAULT,
                  max_height=PREVIEW_MAX_HEIGHT_DEFAULT):
-    """交付侧预览缩图：PNG → 等比缩小 JPEG。编码走系统 .NET
+    """交付侧预览缩图：PNG/JPEG → 等比缩小 JPEG。编码走系统 .NET
     System.Drawing（渲染器同引擎，零依赖红线不破）。梯次 (宽,质量)
     降档直至 ≤ max_bytes；**不放大**；**高度也设上限**（超长页整页缩略
     图不能把上下文撑爆，v0.2.6 实弹：49446px 长页按宽缩仍有 2.8MB）。
     返回 (jpeg_bytes, info)；info = {width, height, quality, bytes, fit}——
-    fit=False 表示梯次到底仍超限，如实交付最小档不假装。"""
+    fit=False 表示梯次到底仍超限，如实交付最小档不假装。
+
+    v0.4.0：源可以是 JPEG（transform 的输出），尺寸嗅探走 image_size；
+    临时文件仍以 .png 命名——GDI+ 按内容识别，不看扩展名。"""
     w = int(width)
-    sz = _png_size(png_bytes)
+    sz = image_size(png_bytes)
     if sz and sz[0] and sz[1] and max_height:
         # 按高约束反推宽度：h' = w' * (src_h/src_w) ≤ max_height
         by_h = int(max(1, float(max_height) * sz[0] / float(sz[1])))

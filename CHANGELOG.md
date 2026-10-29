@@ -2,6 +2,53 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.4.0] - 2026-10-29
+
+### 新增（裁切 / 缩放 / JPEG 交付，补 `图片标注工具/` 的缺口）
+- **`ashot/transform.py`**：裁切 + 缩放 + 编码一条流水线（`apply()`），
+  纯函数 `normalize_crop`/`plan_size`/`png_size`/`default_out` 可单测。
+- **`ashot/_gdi_image.ps1`**：系统 .NET GDI+ 执行（裁 → HighQualityBicubic
+  缩放 → PNG/JPEG），纯 ASCII 纪律；**不引入 PIL**，失败如实报错不静默降级。
+- **CLI**：`crop <png> --box x,y,w,h [--scale|--width|--max-side] [--dpr K]
+  [--jpg Q]`、`resize`、`compose`（截屏/读图→裁→缩→标注→存盘）；
+  `annotate` 增加 `--jpg/--quality/--max-side`。
+- **`shot` 截完直接缩放/压图**：`shot --scale/--max-side/--jpg`，
+  MCP `ashot_shot(scale,max_side,jpg,quality)`——不必再调一次 resize；
+  缺省文件名跟着格式变（`--jpg` 落 `shot_*.jpg`），retention 清理
+  同时收 `.png/.jpg/.jpeg`。
+- **MCP**：`ashot_crop`/`ashot_resize`（**22 工具**）；`ashot_annotate`
+  增加 `jpg/quality/max_side`。
+- **`output.image_size()`**：PNG IHDR + JPEG SOF 嗅探；`preview_jpeg`
+  改用它，JPEG 输出也能进缩图梯次。
+
+### 契约
+- `box` = **源图像素** `x,y,w,h`（不是 x1,y1,x2,y2）；`dpr>0` = box 是
+  CSS 像素；**先裁后缩**；收据回显 `crop`/`crop_px`/`coord_space`。
+- 越界 = 夹到边界 + `bounds_warn`（不静默裁掉内容）；完全图外才报错；
+  `scale/width/max_side` 三选一，`max_side` 只缩不放。
+
+### 审查修复（子 agent 只读审查，2026-10-29）
+- **P0**：`apply()` 先 `mkstemp` 占了输出路径，导致「PS 没写出文件」
+  判据恒真 → PS 静默失败会交付 0 字节文件。改为占位后 `unlink`，
+  并加「非空 + 魔数（PNG/JPEG）匹配」双校验，不符即 RuntimeError。
+- **P1**：引擎上报的 w/h 缺失或与请求不一致 → 直接失败（旧实现短路
+  漏检，只有 w 无 h 还会 TypeError）；输入从「只认 PNG」放宽到
+  **PNG/JPEG**（GDI+ 本来就能读，旧实现让 jpg 再裁一刀报「PNG 坏了」）；
+  `ashot_shot` 的 docstring 误混入 annotate 的 v0.4.0 段落（会让模型
+  按描述传不存在的参数）；CLI `annotate`/`shot` 的 informational 行
+  从 stdout 挪到 stderr（stdout 只留路径的契约）。
+- **P2**：`dpr` 无 crop 时报错（不再静默忽略）、尺寸舍入改四舍五入、
+  `out_path` 支持「不存在但带尾分隔符」的目录、`_parse_box` 的 JSON
+  分支校验 4 项、conftest 用 session 根目录并注明「mkdtemp 在本机
+  不可写」的实测理由。
+
+### 测试
+- 新增 `tests/test_transform.py` 30 项 + `tests/conftest.py`（把 tmp_path
+  从 0o700 换成常规权限目录——本机沙箱下 0o700 目录不可写，旧办法
+  `--basetemp` 治不了）。全套 **141 项**通过。
+- 真机：4K 桌面截图 → 裁 600×700（345ms）/ 1.5× 放大代码（435ms）/
+  resize+JPEG 228KB / compose 980×950 JPEG 126KB（1046ms）。
+
 ## [0.3.0] - 2026-10-29
 
 ### 发布（文档与版本里程碑）

@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ashot import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,  # noqa: E402
-                   output, show, vision)
+                   output, show, transform, vision)
 from ashot._coerce import as_bool, as_int  # noqa: E402
 
 TOOLS = {}
@@ -90,11 +90,18 @@ def _parse_area(area):
 
 
 def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
-          area=None, retention_days=30, preview=True):
+          area=None, retention_days=30, preview=True, scale=0.0,
+          max_side=0, jpg=0, quality=85):
     """桌面截图：mode=full(全虚拟桌面)/screen(单屏,screen=序号)/win(前台窗口)
-    /area(区域,area=[l,t,w,h])。返回 PNG 绝对路径；clip=true 只进剪贴板
+    /area(区域,area=[l,t,w,h])。返回图片绝对路径；clip=true 只进剪贴板
     不落盘（**clip 与 preview 同传时 clip 优先，preview 被忽略**）。
     每次运行顺手清理超 retention_days 的旧图（keep=true 跳过）。
+
+    **v0.4.0：截完可直接缩放/压缩**（不必再调一次 ashot_resize）——
+    scale>0 倍率（允许放大，如 0.5 / 1.5）、max_side>0 最长边上限
+    （**只缩不放**，如 1600）、jpg>0 直接存 JPEG（质量 jpg；out 以 .jpg
+    结尾也自动转）。收据带 src/w/h/format/bytes，一眼看出缩没缩。
+    clip=true 时缩放在 PNG 上做（剪贴板要位图），jpg 只影响落盘。
 
     preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块，附 1200px /
     ≤200KB JPEG 缩图 ImageContent——模型不必再 read_image 多一跳。
@@ -110,16 +117,27 @@ def _shot(mode="full", screen=None, out=None, clip=False, keep=False,
         all_black = capture.is_all_black(r["bgra"], r["w"], r["h"])
     else:
         png = r["png"]   # PS 兜底路径是 PNG 字节，黑帧检测不拆解（如实 None）
+    fmt, q = _fmt_choice(jpg, quality, out)
     if as_bool(clip):
+        if scale or max_side:   # 剪贴板要位图：缩放在 PNG 上做，不转 JPEG
+            png, _t = transform.apply(png, scale=scale, max_side=max_side)
         if not output.clip_png(png):
             raise RuntimeError("剪贴板写入失败")
         return json.dumps({"ok": True, "clipboard": True}, ensure_ascii=False)
-    path = output.save(png, out=out)
+    receipt = {"ok": True, "all_black": all_black,
+               "box_source": r.get("box_source")}
+    if scale or max_side or fmt == "jpeg":
+        png, tinfo = transform.apply(png, scale=scale, max_side=max_side,
+                                     fmt=fmt, quality=q)
+        for k in ("src", "w", "h", "format", "bytes", "engine", "ms"):
+            if k in tinfo:
+                receipt[k] = tinfo[k]
+    path = output.save(png, out=out,
+                       ext=".jpg" if fmt == "jpeg" else ".png")
     n, mb = output.gc(retention_days=as_int(retention_days, 30),
                       keep=as_bool(keep))
-    receipt = {"ok": True, "path": path, "all_black": all_black,
-               "box_source": r.get("box_source"),
-               "gc": {"removed": n, "freed_mb": round(mb, 1)}}
+    receipt["path"] = path
+    receipt["gc"] = {"removed": n, "freed_mb": round(mb, 1)}
     if r.get("gdi_error"):
         receipt["gdi_error"] = r["gdi_error"]   # Q09：降级原因不静默
     if as_bool(preview):
@@ -140,7 +158,8 @@ def _screens():
                       ensure_ascii=False)
 
 
-def _annotate(image, ops, out=None, preview=True):
+def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
+              max_side=0):
     """对既有 PNG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     text(中文可标注，GDI+ 系统字体；v0.1.9 起可选 font=字体族名/bold=
     粗体开关，缺省微软雅黑+粗体；未安装字体名静默回退默认；font/bold
@@ -153,6 +172,8 @@ def _annotate(image, ops, out=None, preview=True):
     ops 时 gdi+ 仍成立）；pixel_ops=像素操作数量；bounds_warn=实测超界
     告警（v0.2.6 Q15，ps1 MeasureString 实测，非估算）。
     像素 ops 恒在形状之后叠加（与 ops 数组顺序无关）。
+    **v0.4.0**：jpg>0 = 标注后输出 JPEG（质量为 jpg；out 以 .jpg 结尾
+    也自动转，质量取 quality）；max_side>0 = 顺带限制最长边（只缩不放）。
     preview **缺省 true**（v0.2.6 Q16）：收据升级多内容块 + ≤200KB JPEG。
     返回标注后 PNG 绝对路径；out 缺省写 <原名>_annotated.png——绝不覆盖
     原图（v0.1.5 P1 根修）。"""
@@ -162,14 +183,22 @@ def _annotate(image, ops, out=None, preview=True):
     stats = {}
     out_bytes, backend, pixel_n = annotate_gdi.annotate_png_vector(
         png, ops_list or [], stats=stats)
-    path = output.save(out_bytes, out=out or annotate.default_out(image))
-    receipt = {"ok": True, "path": path, "backend": backend,
-               "pixel_ops": pixel_n}
+    fmt, q = _fmt_choice(jpg, quality, out)
+    path = transform.out_path(out, image, "annotated", fmt)
+    receipt = {"ok": True, "backend": backend, "pixel_ops": pixel_n}
     if stats.get("degrade_reason"):
         receipt["degrade_reason"] = stats["degrade_reason"]
         receipt["backend_fallback"] = True
     if stats.get("bounds_warn"):
         receipt["bounds_warn"] = stats["bounds_warn"]
+    if fmt == "jpeg" or int(max_side or 0) > 0:
+        out_bytes, tinfo = transform.apply(
+            out_bytes, max_side=int(max_side or 0), fmt=fmt, quality=q)
+        for k in ("w", "h", "format", "bytes", "engine", "ms"):
+            if k in tinfo:
+                receipt[k] = tinfo[k]
+    path = output.save(out_bytes, out=path)
+    receipt["path"] = path
     if as_bool(preview):
         try:
             jpeg, info = output.preview_jpeg(out_bytes)
@@ -180,6 +209,93 @@ def _annotate(image, ops, out=None, preview=True):
             receipt["preview"] = {"error": "%s: %s"
                                   % (type(e).__name__, str(e)[:200])}
     return json.dumps(receipt, ensure_ascii=False)
+
+
+def _crop(image, box, out=None, scale=0.0, width=0, max_side=0, jpg=0,
+          quality=85, dpr=0.0, preview=True):
+    """裁切既有图片（v0.4.0，补 imgtool 的裁切缺口）：box="x,y,w,h"
+    （**源图像素**的左上角+宽高，**不是** x1,y1,x2,y2）。
+    dpr>0 表示 box 给的是 CSS 像素（如浏览器 DevTools 的
+    getBoundingClientRect），内部先乘 dpr——省掉手算，也避免
+    「CSS 当像素用」这类静默错位。
+    顺带缩放：scale>0 倍率（允许放大）/ width>0 目标宽 / max_side>0
+    最长边（只缩不放）——三选一。jpg>0 直接输出 JPEG（质量 jpg）。
+    **越界处理**：夹到图边并写 bounds_warn（不静默裁掉内容、也不整单
+    失败）；区域完全在图外才报错。收据回显 crop(x,y,w,h) 与
+    crop_px(x0,y0,x1,y1)——box 语义写反时一眼可见。
+    preview 缺省 true（附缩图，方便确认裁对了）。本工具需宿主重连后
+    才会出现在工具表。"""
+    with open(str(image), "rb") as fh:
+        png = fh.read()
+    fmt, q = _fmt_choice(jpg, quality, out)
+    data, info = transform.apply(
+        png, crop=_parse_box(box), scale=scale, width=width,
+        max_side=max_side, fmt=fmt, quality=q, dpr=dpr)
+    path = transform.out_path(out, image, "cropped", fmt)
+    rec = {"ok": True, "path": output.save(data, out=path)}
+    rec.update(info)
+    return _maybe_preview(rec, data, preview)
+
+
+def _resize(image, out=None, scale=0.0, width=0, max_side=0, jpg=0,
+            quality=85, preview=True):
+    """缩放既有图片（v0.4.0）：scale=倍率（允许放大）/ width=目标宽 /
+    max_side=最长边上限（**只缩不放**）——三选一，同给必报错。
+    jpg>0 输出 JPEG（质量 jpg）；out 以 .jpg 结尾也自动转。
+    收据含 src/w/h/scale/format/bytes/engine（gdi+=系统 GDI+ 高质量
+    双三次；失败如实报错，不静默降质）。preview 缺省 true。
+    本工具需宿主重连后才会出现在工具表。"""
+    with open(str(image), "rb") as fh:
+        png = fh.read()
+    if not (scale or width or max_side):
+        raise ValueError("resize 至少给 scale / width / max_side 之一")
+    fmt, q = _fmt_choice(jpg, quality, out)
+    data, info = transform.apply(png, scale=scale, width=width,
+                                 max_side=max_side, fmt=fmt, quality=q)
+    path = transform.out_path(out, image, "resized", fmt)
+    rec = {"ok": True, "path": output.save(data, out=path)}
+    rec.update(info)
+    return _maybe_preview(rec, data, preview)
+
+
+def _parse_box(box):
+    """"x,y,w,h"（也收空格分隔或 JSON 数组）-> [x,y,w,h]。与 ashot_shot
+    的 area 解析同款，agent 不必记两套引号规则。"""
+    if isinstance(box, (list, tuple)):
+        return list(box)
+    s = str(box).strip()
+    if s.startswith("["):
+        vals = json.loads(s)
+        if not isinstance(vals, (list, tuple)) or len(vals) != 4:
+            raise ValueError('box 需要 4 个数字 x,y,w,h：%r' % (box,))
+        return list(vals)
+    parts = [x.strip() for x in s.replace(" ", ",").split(",") if x.strip()]
+    if len(parts) != 4:
+        raise ValueError('box 需要 4 个数字 x,y,w,h（"10,20,300,400"）：%r'
+                         % (box,))
+    return [float(x) for x in parts]
+
+
+def _fmt_choice(jpg, quality, out):
+    """-> (fmt, quality)。jpg>0 显式 JPEG；否则看输出扩展名。"""
+    if int(jpg or 0) > 0:
+        return "jpeg", int(jpg)
+    if str(out or "").lower().endswith((".jpg", ".jpeg")):
+        return "jpeg", int(quality or 85)
+    return "png", int(quality or 85)
+
+
+def _maybe_preview(rec, data, preview):
+    if as_bool(preview):
+        try:
+            jpeg, info = output.preview_jpeg(data)
+            rec["preview"] = info
+            return _content_with_image(json.dumps(rec, ensure_ascii=False),
+                                       jpeg)
+        except Exception as e:  # noqa: BLE001 —— 预览失败不吞主收据
+            rec["preview"] = {"error": "%s: %s"
+                              % (type(e).__name__, str(e)[:200])}
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _tool_named(name, fn):
@@ -581,6 +697,8 @@ def _frame_element(iframe, selector, port=None, index=0, ws=None):
 _tool_named("ashot_shot", _shot)
 _tool_named("ashot_screens", _screens)
 _tool_named("ashot_annotate", _annotate)
+_tool_named("ashot_crop", _crop)
+_tool_named("ashot_resize", _resize)
 _tool_named("ashot_fonts", _fonts)
 _tool_named("ashot_show", _show)
 _tool_named("ashot_hash", _hash)

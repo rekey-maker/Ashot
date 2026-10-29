@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.3.0**，MCP 20 个工具。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.0**，MCP 22 个工具。
 
 ## 安装与要求
 
@@ -15,7 +15,8 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
 - **截图**：全桌面 / 单屏 / 前台窗口 / 任意区域；GDI 主路 + PowerShell
   兜底自动降级（失败原因 `gdi_error` 如实带出）；前台窗口走 **DWM 可见
   帧界**（v0.2.6，不再把阴影/不可见 resize 边截进来）；进程级 DPI 感知；
-  多屏枚举；全黑帧检测（远程会话自检）
+  多屏枚举；全黑帧检测（远程会话自检）；**截完可直接
+  `--scale/--max-side/--jpg`**（v0.4.0，不必再单独跑一次 resize）
 - **标注**（v0.1.7 起矢量形状走 GDI+ 抗锯齿，失败自动降级纯像素画布，
   收据 `backend` 字段如实标注）：
   `rect`（可选圆角）/ `ellipse` / `line` / `arrow`（缺省渐变实心箭头，
@@ -26,6 +27,12 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `smarterase`（边缘均值色填充）
   - 每个 op 独立 `color`（#RRGGBB）与 `width`（粗细）
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
+- **裁切 / 缩放 / JPEG 交付**（v0.4.0，补 imgtool 的缺口）：对**已有
+  图片**裁切（`crop --box x,y,w,h`）、缩放（`resize --scale/--width/
+  --max-side`，max_side 只缩不放）、直接出 JPEG（`--jpg 85`）；
+  `compose` 一条命令走完「截屏/读图→裁→缩→标注→存盘」。引擎=系统
+  .NET System.Drawing（与矢量渲染同款，**不装 PIL**）；越界夹到边界
+  并写 `bounds_warn`，收据回显 `crop`/`crop_px`（box 写反一眼可见）
 - **浏览器捕获**（v0.2.0）：纯标准库 CDP 客户端——`cdp-tabs`/
   `cdp-shot` 抓任何 Chromium 系浏览器的标签页（**无头/有头通吃，与
   AI 宿主无关**），captureBeyondViewport 全页，自动发现调试端口；
@@ -46,19 +53,21 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   v0.2.8 补 OOPIF/裁剪）
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，二十工具 `ashot_shot` / `ashot_annotate` /
+- **MCP**：stdio JSON-RPC 2.0，二十二工具 `ashot_shot` / `ashot_annotate` /
   `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
   起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0）/ `ashot_cdp_key`
   + `ashot_cdp_wheel` + `ashot_cdp_click` + `ashot_cdp_drag`（v0.2.1）/
   `ashot_cdp_dblclick` + `ashot_cdp_type`（v0.2.3）/ `ashot_cdp_eval` +
   `ashot_cdp_view`（v0.2.5）/ `ashot_hash` + `ashot_diff` +
-  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8），
-  与 CLI 同能力；每个收据带 `ver`（识破旧进程）
+  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8）/ `ashot_crop` + `ashot_resize`
+  （v0.4.0，裁切/缩放/JPEG），与 CLI 同能力；每个收据带 `ver`（识破旧进程）
 
 ## 用法
 
 ```bash
 python -m ashot.cli shot --out shot.png          # 全桌面
+python -m ashot.cli shot --max-side 1600 --jpg 85 --out small.jpg
+                                                 # 截完即缩 + 压 JPEG
 python -m ashot.cli shot area --area 100 100 800 500
 python -m ashot.cli screens                      # 列显示器
 python -m ashot.cli fonts kai                    # 列已装字体族（text 的 font 先查后用）
@@ -75,16 +84,23 @@ python -m ashot.cli annotate shot.png '[
    "width":10,"color":"#DC2626"},
   {"kind":"text","x":20,"y":80,"text":"这里有问题","size":28,
    "color":"#111827","font":"KaiTi","bold":false}]'
+python -m ashot.cli crop shot.png --box 100,80,800,600 --scale 1.2 \
+  --out crop.png                               # 对已有图片裁切+放大
+python -m ashot.cli resize shot.png --max-side 1600 --jpg 85 \
+  --out small.jpg                              # 只缩不放 + JPEG
+python -m ashot.cli compose --area 100 100 1200 800 --box 0,0,900,600 \
+  --rect 40,40,300,200 --text 60,560:这里是重点 --jpg 85 --out out.jpg
 ```
 
 ## MCP 接入
 
-stdio JSON-RPC 2.0（协议 2024-11-05），二十工具与 CLI 同能力（每个收据
+stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（每个收据
 都带 `ver`——文件版本号对了但进程还是旧的，一眼识破；v0.2.6 起）：
 
 | 工具 | 作用 |
 |---|---|
-| `ashot_shot` | 截图（full/screen/win/area；收据带 `all_black` 黑帧自检、`box_source` 区域来源、`gdi_error` 降级原因；v0.2.6 起 `preview` **缺省 true**，附 ≤200KB JPEG 缩图 ImageContent） |
+| `ashot_shot` | 截图（full/screen/win/area；**v0.4.0 起可传 `scale`/`max_side`/`jpg`/`quality`——截完直接缩放/转 JPEG**；收据带 `all_black` 黑帧自检、`box_source` 区域来源、`gdi_error` 降级原因；v0.2.6 起 `preview` **缺省 true**，附 ≤200KB JPEG 缩图 ImageContent） |
+| `ashot_crop` / `ashot_resize` | 裁切 / 缩放 / 转 JPEG（v0.4.0；crop 的 box 是 **x,y,w,h**，dpr 传 CSS 坐标换算，越界进 `bounds_warn`） |
 | `ashot_annotate` | JSON ops 批量标注（收据带 `backend`/`pixel_ops`/`bounds_warn` 越界告警/`degrade_reason` 降级原因；text 可带 `w` 自动换行；preview 缺省 true） |
 | `ashot_screens` | 列显示器 |
 | `ashot_fonts` | 列已装字体族（text 的 font 先查后用；v0.1.10 起） |
@@ -122,12 +138,12 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十工具与 CLI 同能力（每�
 python -m pytest tests/ -q
 ```
 
-111 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+141 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
 caption 转义、CDP 发现降级/多实例拒绝/坐标语义、MCP 坏帧韧性、
-retention 边界等。
+retention 边界等；v0.4.0 另加 `tests/test_transform.py` 30 项（裁切逐像素、越界告警、dpr、先裁后缩、JPEG 魔数/体积、CLI/MCP 三面）。
 
 > Windows 上若 `tmp_path` 报 PermissionError（pytest 以 `mode=0o700`
 > 建目录，本机 ACL 会拒读），加 `--basetemp=<工作区内新目录>` 即可；
@@ -147,6 +163,7 @@ retention 边界等。
 | 能力 | 状态 |
 |---|---|
 | Windows 桌面截图（全屏/单屏/窗口/区域）、标注、剪贴板 | ✓ |
+| 裁切 / 缩放 / JPEG 交付（对已有图片） | ✓（.NET GDI+；Mac 随批2） |
 | CDP 浏览器捕获/操作（无头/有头、任何宿主拉起的 Chromium） | ✓ 跨平台 |
 | 超长页滚动拼接（含隐藏吸顶元素） | ✓ |
 | 元素矩形/可见性、同源+跨域+跨站 OOPIF iframe 映射 | ✓（嵌套跨域仍不支持） |
@@ -165,14 +182,16 @@ ashot/
 ├── cdp.py                      # CDP 客户端（WS/截图/输入/滚动拼接）
 ├── dom.py                      # 元素矩形+可见性 / iframe 坐标映射（v0.2.7+）
 ├── vision.py                   # 图像指纹与差异（v0.2.7）
+├── transform.py + _gdi_image.ps1  # 裁切/缩放/JPEG（v0.4.0，纯 ASCII PS）
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
-└── tests/test_ashot.py         # 111 项
+├── tests/test_ashot.py         # 111 项（v0.4.0 前的回归锁）
+└── tests/test_transform.py     # 30 项（v0.4.0 裁切/缩放/JPEG）
 ```
 
 ## 版本与文档
 
 - 版本史：[CHANGELOG.md](CHANGELOG.md)；设计文档索引：[docs/design/README.md](docs/design/README.md)
 - 审查与修复证据：[docs/review/](docs/review/)
-- 当前 0.3.0：功能同 0.2.8（OOPIF/可见比例/吸顶隐藏），版本号对齐能力里程碑
+- 当前 0.4.0：新增裁切/缩放/JPEG 交付（`crop`/`resize`/`compose`）；功能面同 0.3.0 其余不变

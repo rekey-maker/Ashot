@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Ashot.cli —— 命令行入口（shot / annotate / screens / fonts / show /
-cdp-tabs / cdp-shot）。"""
+"""Ashot.cli —— 命令行入口（shot / annotate / crop / resize / compose /
+screens / fonts / show / hash / diff / element / frames / cdp-*）。"""
 import argparse
 import json
 import os
@@ -8,13 +8,66 @@ import sys
 import time
 
 from . import (__version__, annotate, annotate_gdi, capture, cdp, dom, fonts,
-               output, show, vision)
+               output, show, transform, vision)
+
+
+def _csv(s, n, name):
+    """"a,b,c" -> [a,b,c]（n 个数字）。CLI 与 MCP 同一套解析规则。"""
+    try:
+        parts = [x.strip() for x in str(s).replace(" ", ",").split(",")
+                 if x.strip()]
+        if len(parts) != n:
+            raise ValueError
+        return [float(x) for x in parts]
+    except (TypeError, ValueError):
+        raise ValueError("%s 需要 %d 个数字（逗号分隔）：%r" % (name, n, s))
+
+
+def _area4(vals, name="--area"):
+    """屏幕区域 -> (l,t,w,h)。`--area 100 100 800 600` 与 `--area
+    "100,100,800,600"` 都认（与 MCP 的 _parse_area 同款——两脸别记两套）。"""
+    if not vals:
+        return None
+    parts = [p for v in vals
+             for p in str(v).replace(" ", ",").split(",") if p.strip()]
+    if len(parts) != 4:
+        raise ValueError("%s 需要 4 个数字（空格或逗号分隔）：%r"
+                         % (name, vals))
+    return tuple(int(float(p)) for p in parts)
+
+
+def _want_jpeg(args, out):
+    """-> (fmt, quality)。`--jpg Q` 显式要求 JPEG；否则看输出扩展名。"""
+    jpg = getattr(args, "jpg", 0) or 0
+    ext = os.path.splitext(str(out or ""))[1].lower()
+    if jpg:
+        return "jpeg", int(jpg)
+    if ext in (".jpg", ".jpeg"):
+        return "jpeg", int(getattr(args, "quality", 85) or 85)
+    return "png", int(getattr(args, "quality", 85) or 85)
+
+
+def _print_transform_info(info, stream=sys.stderr):
+    print("size: %dx%d (src %dx%d)" % (info["w"], info["h"],
+                                       info["src"][0], info["src"][1]),
+          file=stream)
+    if info.get("crop"):
+        print("crop: x,y,w,h=%s  px=%s"
+              % (",".join(str(v) for v in info["crop"]),
+                 ",".join(str(v) for v in info["crop_px"])), file=stream)
+    if info.get("scale") not in (None, 1.0):
+        print("scale: %s" % info["scale"], file=stream)
+    print("format: %s (quality=%s)  bytes: %d  ms: %s"
+          % (info["format"], info.get("quality"), info.get("bytes", 0),
+             info.get("ms")), file=stream)
+    for w in info.get("bounds_warn") or []:
+        print("⚠ %s" % w, file=stream)
 
 
 def _cmd_shot(a):
     try:
         r = capture.shot(mode=a.mode, screen=a.screen,
-                         area=a.area and tuple(a.area))
+                         area=_area4(a.area))
     except Exception as e:  # noqa: BLE001 —— 零静默纪律
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 1
@@ -22,13 +75,27 @@ def _cmd_shot(a):
         png = output.bgra_to_png(r["w"], r["h"], r["bgra"])
     else:
         png = r["png"]
+    fmt, q = _want_jpeg(a, a.out)
     if a.clip:
+        # 剪贴板始终要位图（clip_png 收 PNG），JPEG 只影响落盘
+        if a.scale or a.max_side:
+            png, info = transform.apply(png, scale=a.scale,
+                                        max_side=a.max_side)
+            _print_transform_info(info)
+        if a.jpg:
+            print("⚠ --clip 不落盘：--jpg 只影响落盘格式，剪贴板仍是位图",
+                  file=sys.stderr)
         if not output.clip_png(png):
             print("✗ 剪贴板写入失败", file=sys.stderr)
             return 1
         print("已进剪贴板（未落盘）")
         return 0
-    path = output.save(png, out=a.out)
+    if a.scale or a.max_side or fmt == "jpeg":
+        png, info = transform.apply(png, scale=a.scale, max_side=a.max_side,
+                                    fmt=fmt, quality=q)
+        _print_transform_info(info)
+    path = output.save(png, out=a.out,
+                       ext=".jpg" if fmt == "jpeg" else ".png")
     if a.open:
         os_startfile(path)
     # v0.2.6：区域来源 / 降级原因都亮出来（Q09/Q17，stdout 只留路径）
@@ -37,7 +104,8 @@ def _cmd_shot(a):
         print("⚠ GDI 主路降级：%s" % r["gdi_error"], file=sys.stderr)
     n, mb = output.gc(retention_days=a.retention_days, keep=a.keep)
     if n:
-        print("（retention 清理：%d 张旧图，释放 %.1f MB）" % (n, mb))
+        print("（retention 清理：%d 张旧图，释放 %.1f MB）" % (n, mb),
+              file=sys.stderr)
     print(path)
     return 0
 
@@ -54,15 +122,146 @@ def _cmd_annotate(a):
         stats = {}
         out, backend, pixel_n = annotate_gdi.annotate_png_vector(
             png, ops, stats=stats)
-        path = output.save(out, out=a.out or annotate.default_out(a.image))
+        out_path = transform.out_path(a.out, a.image, "annotated",
+                                      _want_jpeg(a, a.out)[0])
+        fmt, q = _want_jpeg(a, a.out)
+        max_side = getattr(a, "max_side", 0) or 0
+        if fmt == "jpeg" or max_side:
+            out, info = transform.apply(out, max_side=max_side, fmt=fmt,
+                                        quality=q)
+            _print_transform_info(info)
+        path = output.save(out, out=out_path)
         print(path)
-        print("backend: %s" % backend)
-        print("pixel_ops: %d" % pixel_n)
+        print("backend: %s" % backend, file=sys.stderr)
+        print("pixel_ops: %d" % pixel_n, file=sys.stderr)
         # v0.2.6：降级原因与超界告警都走 stderr（stdout 保持"路径"契约）
         if stats.get("degrade_reason"):
             print("⚠ 矢量路降级：%s" % stats["degrade_reason"], file=sys.stderr)
         for w in stats.get("bounds_warn") or []:
             print("⚠ %s" % w, file=sys.stderr)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_crop(a):
+    """裁切（可顺带缩放/转 JPEG）。box 是 **x,y,w,h**，不是 x1,y1,x2,y2。"""
+    try:
+        with open(a.image, "rb") as fh:
+            png = fh.read()
+        fmt, q = _want_jpeg(a, a.out)
+        out_path = transform.out_path(a.out, a.image, "cropped", fmt)
+        data, info = transform.apply(
+            png, crop=_csv(a.box, 4, "--box"), scale=a.scale,
+            width=a.width, max_side=a.max_side, fmt=fmt, quality=q,
+            dpr=a.dpr)
+        path = output.save(data, out=out_path)
+        print(path)
+        _print_transform_info(info)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _cmd_resize(a):
+    """只改尺寸（可顺带转 JPEG）。scale/width/max_side 三选一。"""
+    try:
+        if not (a.scale or a.width or a.max_side):
+            raise ValueError("resize 至少给 --scale / --width / --max-side 之一")
+        with open(a.image, "rb") as fh:
+            png = fh.read()
+        fmt, q = _want_jpeg(a, a.out)
+        out_path = transform.out_path(a.out, a.image, "resized", fmt)
+        data, info = transform.apply(
+            png, scale=a.scale, width=a.width, max_side=a.max_side,
+            fmt=fmt, quality=q)
+        path = output.save(data, out=out_path)
+        print(path)
+        _print_transform_info(info)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 1
+
+
+def _compose_ops(a):
+    """compose 的 CLI 标注参数 -> ops 数组（坐标=裁缩后的图，coord_space
+    随收据回显）。--text 支持 "x,y:文字" 让每处文字独立——imgtool 里
+    多个 --text 共用一条 --label 的坑不复制。"""
+    ops = []
+    for spec in a.rect or []:
+        x, y, w, h = _csv(spec, 4, "--rect")
+        ops.append({"kind": "rect", "x": x, "y": y, "w": w, "h": h,
+                    "width": a.line_width, "color": a.color})
+    for spec in a.arrow or []:
+        x1, y1, x2, y2 = _csv(spec, 4, "--arrow")
+        ops.append({"kind": "arrow", "x1": x1, "y1": y1, "x2": x2,
+                    "y2": y2, "width": a.line_width, "color": a.color})
+    for spec in a.text or []:
+        s = str(spec)
+        body = a.label or ""
+        if ":" in s:
+            pos, body = s.split(":", 1)
+        else:
+            pos = s
+        x, y = _csv(pos, 2, "--text")
+        ops.append({"kind": "text", "x": x, "y": y, "text": body,
+                    "size": a.font_size, "color": a.color})
+    return ops
+
+
+def _cmd_compose(a):
+    """一条命令出图：截屏/读图 -> 裁 -> 缩 -> 标注 -> 存盘（PNG/JPEG）。"""
+    t0 = time.time()
+    try:
+        if a.src:
+            with open(a.src, "rb") as fh:
+                png = fh.read()
+            shot_info = {"kind": "file", "src": a.src}
+        elif a.area:
+            r = capture.shot(mode="area", area=_area4(a.area))
+            png = (output.bgra_to_png(r["w"], r["h"], r["bgra"])
+                   if r["kind"] == "raw" else r["png"])
+            shot_info = {"kind": "shot", "box_source": r.get("box_source")}
+        else:
+            raise ValueError("compose 需要 --src（已有图片）或 --area（屏幕区域）")
+        fmt, q = _want_jpeg(a, a.out)
+        out_path = transform.out_path(a.out, a.src or "compose", "shot", fmt)
+        steps = []
+        if a.box or a.scale or a.width or a.max_side:
+            png, info = transform.apply(
+                png, crop=_csv(a.box, 4, "--box") if a.box else None,
+                scale=a.scale, width=a.width, max_side=a.max_side,
+                dpr=a.dpr)
+            steps.append({"stage": "transform", "size": [info["w"],
+                                                         info["h"]],
+                          "crop": info.get("crop"), "scale": info.get("scale"),
+                          "bounds_warn": info.get("bounds_warn")})
+        ops = _compose_ops(a)
+        backend = None
+        if ops:
+            stats = {}
+            png, backend, pixel_n = annotate_gdi.annotate_png_vector(
+                png, ops, stats=stats)
+            steps.append({"stage": "annotate", "ops": len(ops),
+                          "backend": backend, "pixel_ops": pixel_n,
+                          "bounds_warn": stats.get("bounds_warn")})
+        if fmt == "jpeg":
+            png, info = transform.apply(png, fmt="jpeg", quality=q)
+        path = output.save(png, out=out_path)
+        print(path)
+        size = transform.png_size(png) if png[:8] == b"\x89PNG\r\n\x1a\n" \
+            else output.image_size(png)
+        print("size: %dx%d  format: %s  ms: %d"
+              % (size[0], size[1], fmt, int((time.time() - t0) * 1000)),
+              file=sys.stderr)
+        print("coord_space: ops 坐标按裁缩后的图（%dx%d）"
+              % size, file=sys.stderr)
+        for s in steps:
+            for w in s.get("bounds_warn") or []:
+                print("⚠ %s" % w, file=sys.stderr)
         return 0
     except Exception as e:  # noqa: BLE001
         print("✗ %s: %s" % (type(e).__name__, e), file=sys.stderr)
@@ -499,8 +698,18 @@ def main(argv=None):
     s.add_argument("mode", nargs="?", default="full",
                    choices=["full", "screen", "win", "area"], help="截图模式")
     s.add_argument("--screen", type=int, default=None, help="screen 模式的屏序号")
-    s.add_argument("--area", nargs=4, type=int, metavar=("L", "T", "W", "H"),
-                   help="area 模式区域")
+    s.add_argument("--area", nargs="+", metavar="N",
+                   help="area 模式区域 L T W H（空格或逗号分隔，"
+                        "如 --area 0 0 800 600 / --area 0,0,800,600）")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--scale", type=float, default=0.0,
+                   help="截完按倍率缩放（允许放大；0.5=一半，1.5=放大）")
+    g.add_argument("--max-side", dest="max_side", type=int, default=0,
+                   help="截完限制最长边（**只缩不放**，如 1600）")
+    s.add_argument("--jpg", type=int, default=0,
+                   help="直接存 JPEG（给质量，如 85；体积比 PNG 小一个量级）")
+    s.add_argument("--quality", type=int, default=85,
+                   help="JPEG 质量（--out 以 .jpg 结尾且未给 --jpg 时用）")
     s.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
     s.add_argument("--clip", action="store_true", help="只进剪贴板不落盘")
     s.add_argument("--open", action="store_true", help="截完用看图器打开")
@@ -517,7 +726,70 @@ def main(argv=None):
                    '\\"w\\":100,\\"h\\":50}]"）')
     s.add_argument("--ops-file", default=None, help="ops JSON 文件（复杂标注）")
     s.add_argument("--out", default=None, help="输出路径（缺省 *_annotated.png）")
+    s.add_argument("--jpg", type=int, default=0,
+                   help="标注后转 JPEG（给质量，如 85；缺省仍存 PNG）")
+    s.add_argument("--quality", type=int, default=85,
+                   help="JPEG 质量（--out 以 .jpg 结尾且未给 --jpg 时用）")
+    s.add_argument("--max-side", dest="max_side", type=int, default=0,
+                   help="标注后限制最长边（0=不限）")
     s.set_defaults(func=_cmd_annotate)
+
+    def _add_size_args(p):
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--scale", type=float, default=0,
+                       help="倍率（允许放大，如 1.2 / 0.5）")
+        g.add_argument("--width", type=int, default=0,
+                       help="目标宽（高度等比，允许放大）")
+        g.add_argument("--max-side", dest="max_side", type=int, default=0,
+                       help="最长边上限（**只缩不放**）")
+        p.add_argument("--jpg", type=int, default=0,
+                       help="输出 JPEG（给质量，如 85）")
+        p.add_argument("--quality", type=int, default=85,
+                       help="JPEG 质量（--out 以 .jpg 结尾且未给 --jpg 时用）")
+
+    cp = sub.add_parser("crop", help="裁切既有图片（可顺带缩放/转 JPEG，v0.4.0）")
+    cp.add_argument("image", help="源图 PNG 路径")
+    cp.add_argument("--box", required=True,
+                    help="裁切区域 **x,y,w,h**（左上角+宽高；"
+                         "**不是** x1,y1,x2,y2）")
+    cp.add_argument("--dpr", type=float, default=0,
+                    help="box 给的是 CSS 像素时填 devicePixelRatio"
+                         "（如 1.566），内部乘完再裁")
+    cp.add_argument("--out", default=None, help="输出路径（缺省 *_cropped.png）")
+    _add_size_args(cp)
+    cp.set_defaults(func=_cmd_crop)
+
+    rs = sub.add_parser("resize", help="缩放既有图片（可转 JPEG，v0.4.0）")
+    rs.add_argument("image", help="源图 PNG 路径")
+    rs.add_argument("--out", default=None, help="输出路径（缺省 *_resized.png）")
+    _add_size_args(rs)
+    rs.set_defaults(func=_cmd_resize)
+
+    co = sub.add_parser("compose",
+                        help="一条命令出图：截屏/读图→裁→缩→标注→存盘（v0.4.0）")
+    co.add_argument("--src", default="", help="已有图片（与 --area 二选一）")
+    co.add_argument("--area", nargs="+", metavar="N",
+                    help="屏幕区域 L T W H（空格或逗号分隔；与 --src 二选一）")
+    co.add_argument("--box", default="", help="裁切 **x,y,w,h**")
+    co.add_argument("--dpr", type=float, default=0,
+                    help="--box 是 CSS 像素时填 dpr")
+    co.add_argument("--rect", action="append", default=[],
+                    help="标注框 x,y,w,h（可多次）")
+    co.add_argument("--arrow", action="append", default=[],
+                    help="箭头 x1,y1,x2,y2（可多次）")
+    co.add_argument("--text", action="append", default=[],
+                    help='文字 "x,y:内容"（可多次，各自内容；'
+                         '不带冒号时用 --label）')
+    co.add_argument("--label", default="",
+                    help="--text 没写内容时的共用文字")
+    co.add_argument("--color", default="#FF3B30", help="标注颜色 #RRGGBB")
+    co.add_argument("--line-width", dest="line_width", type=int, default=6,
+                    help="线宽")
+    co.add_argument("--font-size", dest="font_size", type=int, default=32,
+                    help="字号（像素）")
+    co.add_argument("--out", default=None, help="输出路径（缺省派生名）")
+    _add_size_args(co)
+    co.set_defaults(func=_cmd_compose)
 
     s = sub.add_parser("screens", help="列出显示器")
     s.set_defaults(func=_cmd_screens)

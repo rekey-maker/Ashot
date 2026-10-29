@@ -26,6 +26,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   前台窗口/区域 `--area L T W H`；`--out` 指定路径（缺省
   `~\Ashot\shots\shot_时间戳.png`）；`--clip` 只进剪贴板；`--open` 截完即看；
   `--retention-days N`（缺省 30，运行顺手清过期旧图）；`--keep` 跳过清理。
+  **v0.4.0**：`--scale S` / `--max-side N`（只缩不放）/ `--jpg Q`
+  截完直接缩放或存 JPEG（缺省文件名跟着变 `shot_*.jpg`）——
+  不必再单独跑 `resize`。
 - `annotate <png> '<ops JSON>'`——对既有图标注，ops kind ∈
   **rect/ellipse/arrow/line/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
@@ -55,6 +58,20 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   "color":"#FF3B30"},
   {"kind":"text","x":20,"y":80,"text":"这里有问题","size":28,
   "color":"#FFFFFF"}]'`
+- `crop <png|jpg> --box x,y,w,h [--scale S|--width W|--max-side N] [--jpg Q]
+  [--dpr K]`（v0.4.0）——**对已有图片裁切**（`shot area` 只能截屏时限定
+  屏幕区域，裁不了已存在的图）。`--box` 是 **x,y,w,h（左上角+宽高）**，
+  **不是** x1,y1,x2,y2；`--dpr` 表示 box 给的是 CSS 像素（DevTools 的
+  getBoundingClientRect），内部乘 dpr。越界=夹到边界+`bounds_warn`，
+  完全在图外才报错；收据回显 `crop` 与 `crop_px`。
+- `resize <png|jpg> [--scale S|--width W|--max-side N] [--jpg Q]`——缩放；
+  `max_side` **只缩不放**，`scale`/`width` 允许放大；`--jpg` 直接出 JPEG
+  （收据 format/quality/bytes）。
+- `compose (--src IMG|--area L T W H) [--box x,y,w,h] [--scale ...]
+  [--rect ...] [--arrow ...] [--text "x,y:文字"] [--jpg Q] --out OUT`
+  （v0.4.0）——一条命令出图：截屏/读图→裁→缩→标注→存盘。**标注坐标按
+  裁缩后的图**（stderr 会写 coord_space）；`--text` 每处独立，多个
+  `--text` 不再共用一条 label。
 - `fonts [filter] [--refresh]`（v0.1.10/0.2.6）——列出已装字体族（英文
   规范名，过滤不区分大小写）。**"楷体"这类本地名能否命中取决于 OS**：
   部分机器 .NET 的 FontFamily.Name 也只回英文名，此时只有 "kai" 能查到
@@ -136,7 +153,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 
 ## MCP（ashot 域名，宿主注册后可用）
 
-v0.3.0 起 **20 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+v0.4.0 起 **22 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+`ashot_crop` / `ashot_resize` /
 `ashot_fonts` / `ashot_show` / `ashot_hash` / `ashot_diff` / `ashot_element` /
 `ashot_frames` / `ashot_frame_element` / `ashot_cdp_tabs` /
 `ashot_cdp_shot` / `ashot_cdp_view` / `ashot_cdp_eval` / `ashot_cdp_key` /
@@ -148,8 +166,11 @@ frames 见「通用原语」段。
 `all_black`——远程会话黑帧自检，true=如实报「当前会话截不出」；
 `box_source`=区域来源，win 模式 dwm=可见帧界、rect=回退；`gdi_error`=
 主路降级原因）、
-`ashot_annotate`（image/ops/out；**缺省写 <原名>_annotated.png，绝不
-覆盖原图**）、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
+`ashot_annotate`（image/ops/out + jpg/quality/max_side；**缺省写
+<原名>_annotated.png，绝不覆盖原图**）、
+**`ashot_crop`（image/box(x,y,w,h)/dpr?/scale|width|max_side/jpg?）/
+`ashot_resize`（image/scale|width|max_side/jpg?）**——收据带回显
+`crop`/`crop_px`/`src`/`w`/`h`/`format`/`engine`；越界进 `bounds_warn`、`ashot_fonts`（v0.1.10，filter?——列已装字体族，收据
 {ok, count, families}）、**`ashot_show`（v0.1.12，image/title/
 out_dir 必填 + caption?/width?——用户可见展示，见上）**；**新增工具
 需宿主重连后才出现在工具表**——与 CLI 同能力。**v0.2.6 起
@@ -164,7 +185,7 @@ out_dir 必填 + caption?/width?——用户可见展示，见上）**；**新�
 
 **部署纪律（2026-10-28 实弹，v0.2.6 加检测）**：改了 Ashot 代码后，
 宿主重启未必真换 MCP 进程（进程会赖着旧代码，如 screens 返回 0×0
-假象）——杀掉 ashot_mcp.py 进程即可，宿主下次调用自动重拉新版。
+假象）——杀掉 ashot_mcp.py 进程即可，宿主下次调用自动重拉新版；**进程在宿主侧不可见/不可杀时**（2026-10-29 实测：沙箱里看不到 python 子进程）就在宿主界面把该 MCP **断开→重连**，或重启宿主——工具表是连接时拉的，重连后新工具与新参数才会出现。
 **v0.2.6 起每个收据都带 `ver`**：收据里的 ver 与你刚改的版本号不一致，
 就说明还是旧进程。开发期更稳的做法：验证逻辑走 CLI（每次新进程），
 MCP 只做最终验收。
