@@ -2,6 +2,36 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.6.1] - 2026-10-29
+
+### 审查修复（v0.6.0 两路子 agent 只读审查）
+- **P0 cssPath 不唯一/被截断**：旧实现超过 6 层直接 break、不用 body 锚点，
+  深层重复结构下 `querySelector` 会命中另一个面板的同类元素（静默标错）。
+  改为**全链 `nth-of-type`（锚到 body）**；真机深链双面板实测每个 ref 的
+  选择器 `querySelectorAll(...).length == 1`。
+- **P1 密码明文进快照**：`txt()` 旧实现先取 `el.value`，无 aria-label 的
+  password 框会把明文写进 tree/refs。现在 input/textarea/select 一律不读
+  value（按钮类除外），只认 aria-label/placeholder/alt/title；
+  `element_rect` 的 text 同步收紧。真机 `value="hunter2"` → 快照 text 为空。
+- **P1 selector + dpr 双重缩放**：`apply_selectors` 已乘页面 dpr，全局
+  `dpr`/`scale_ops` 又乘一次（1.5→2.25）。解析过的 op 标 `__resolved__`，
+  `scale_ops` 跳过；并移除 op 里的 dpr 键。
+- **P1 整页截图与视口坐标混用**：新增 `space="viewport"|"document"`
+  （CLI `--space`），document 自动加 `scroll×dpr`；真机滚动 500 后
+  b2 视口 y=-412、document y=88。
+- **CLI 的 ref 是死路**：CLI 无跨进程快照缓存，现在明确报
+  「ref 仅 MCP 同连接可用」；CLI 文档/帮助改为 selector 或坐标。
+- **snapshot 体积**：节点预算独立于 ref 数（结构节点也计数），超限标
+  `truncated`；`max_nodes` 夹在 1~500；输出 >200k 字符兜底截断。
+- **ref 过期**：`_LAST_REFS` 存 url/scroll，annotate 时比对 `location.href`，
+  导航后报「ref 已过期」。
+- 文档：README 工具清单补 `ashot_snapshot`、计数/版本修正；SKILL 工具数
+  23、ref 仅 MCP。
+
+### 测试
+- **176 项全绿**（新增 5：resolved 不二次 dpr、document 偏移、CLI ref 拒绝、
+  snapshot truncated、超高图 to_source）。
+
 ## [0.6.0] - 2026-10-29
 
 ### 新增（MCP 精确定位，对齐 Playwright MCP 的 ref 思路）

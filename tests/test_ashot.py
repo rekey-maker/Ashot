@@ -449,7 +449,7 @@ def test_mcp_tool_schemas():
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview",
                                      "jpg", "quality", "max_side", "dpr",
-                                     "port", "index", "ws"}
+                                     "port", "index", "ws", "space"}
     assert sc["properties"]["dpr"]["type"] == "number", \
         "v0.5.1：dpr 典型值 1.25/1.566，声明 integer 会让宿主拒参"
     assert "dpr" in mcp_mod.TOOLS["ashot_annotate"]["description"], \
@@ -2839,3 +2839,70 @@ def test_preview_to_source_mapping():
     jpeg, info = output.preview_jpeg(big)
     assert info["src"][0] == 800
     assert info["to_source"] == round(800 / float(info["width"]), 4)
+
+
+def test_apply_selectors_dpr_no_double():
+    """selector 已乘页面 dpr；全局 dpr 不得再乘（审查 P1-3）。"""
+    from ashot import dom
+    import pytest as _pytest
+    monkeypatch_rect = {"x": 10, "y": 20, "w": 100, "h": 40, "dpr": 1.5,
+                        "scroll_x": 0, "scroll_y": 0}
+    old = dom.element_rect
+    dom.element_rect = lambda ws, sel, timeout=15: dict(monkeypatch_rect)
+    try:
+        out = dom.apply_selectors("ws", [{"kind": "rect",
+                                          "selector": "#a", "dpr": 1.5}])
+        assert out[0]["x"] == 15 and out[0]["w"] == 150
+        scaled = annotate.scale_ops(out, 1.5)
+        assert scaled[0]["x"] == 15 and scaled[0]["w"] == 150, \
+            "已 resolved 的 op 不能再乘 dpr"
+    finally:
+        dom.element_rect = old
+
+
+def test_apply_selectors_document_space():
+    """space=document 时加 scroll×dpr（整页截图用）。"""
+    from ashot import dom
+    rect = {"x": 10, "y": 20, "w": 100, "h": 40, "dpr": 2,
+            "scroll_x": 10, "scroll_y": 30}
+    old = dom.element_rect
+    dom.element_rect = lambda ws, sel, timeout=15: dict(rect)
+    try:
+        out = dom.apply_selectors("ws", [{"kind": "rect", "selector": "#a"}],
+                                  space="document")
+        assert (out[0]["x"], out[0]["y"]) == (40, 100)
+        out2 = dom.apply_selectors("ws", [{"kind": "rect", "selector": "#a"}])
+        assert (out2[0]["x"], out2[0]["y"]) == (20, 40)
+    finally:
+        dom.element_rect = old
+
+
+def test_apply_selectors_ref_without_cache():
+    """CLI 无 refs 缓存时必须明确拒绝（别误导成"先 snapshot"）。"""
+    from ashot import dom
+    import pytest as _pytest
+    with _pytest.raises(ValueError) as ei:
+        dom.apply_selectors("ws", [{"kind": "rect", "ref": "e1"}])
+    assert "仅 MCP" in str(ei.value)
+
+
+def test_snapshot_truncated_flag(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    payload = {"tree": {"role": "body", "name": "", "kids": [],
+                        "ref": None, "box": None},
+               "refs": {}, "count": 0, "truncated": True,
+               "url": "https://x/", "title": "t", "dpr": 1, "scroll": [0, 0]}
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": payload}})
+    rec = dom.snapshot("ws://x", max_nodes=10000)
+    assert rec["truncated"] is True
+
+
+def test_preview_to_source_tall():
+    """超高图触发 max_height 分支，to_source 仍正确。"""
+    tall = output.bgra_to_png(400, 8000, bytes([0, 0, 255, 255]) * (400 * 8000))
+    jpeg, info = output.preview_jpeg(tall)
+    assert info["height"] <= 4000
+    assert info["to_source"] == round(400 / float(info["width"]), 4)
+    assert info["src"] == [400, 8000]

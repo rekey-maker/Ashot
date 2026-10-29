@@ -137,8 +137,8 @@ def _cmd_annotate(a):
                for o in ops):
             ws = _resolve_cdp_ws(a)
             if not ws:
-                raise ValueError("ops 里有 selector/ref，需要 --port/--index/--ws")
-            ops = dom.apply_selectors(ws, ops)
+                return 1      # _resolve_cdp_ws 已打印过具体原因，别重复误导
+            ops = dom.apply_selectors(ws, ops, space=a.space)
         if a.dpr:
             ops = annotate.scale_ops(ops, a.dpr)
             print("dpr: x%g（只缩放坐标，字号/线宽不变）" % a.dpr,
@@ -845,9 +845,13 @@ def main(argv=None):
                    help="标注模板 JSON（ops 数组或 {\"ops\": […] }），"
                         "与内联 ops 合并（v0.5.0）")
     s.add_argument("--port", type=int, default=None,
-                   help="ops 用 selector/ref 时的 CDP 端口（v0.6.0）")
+                   help="ops 用 selector 时的 CDP 端口（ref 仅 MCP 可用）")
     s.add_argument("--index", type=int, default=0, help="第几个 page 标签")
     s.add_argument("--ws", default=None, help="page 级 ws url（优先）")
+    s.add_argument("--space", choices=["viewport", "document"],
+                   default="viewport",
+                   help="selector/ref 的坐标系：viewport（缺省）或 document"
+                        "（整页截图，自动加 scroll）")
     s.set_defaults(func=_cmd_annotate)
 
     def _add_size_args(p):

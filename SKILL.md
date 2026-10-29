@@ -30,7 +30,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   截完直接缩放或存 JPEG（缺省文件名跟着变 `shot_*.jpg`）——
   不必再单独跑 `resize`。
 - `annotate <png|jpg> '<ops JSON>' [--dpr K] [--template 文件]
-  [--port/--index/--ws]`——ops 里可用 `selector`/`ref`（v0.6.0）——对既有图标注（v0.5.0 起 JPEG 直接进），ops kind ∈
+  [--port/--index/--ws] [--space viewport|document]`——ops 里可用
+  `selector`/`ref`（v0.6.0；**ref 仅 MCP 同连接可用**，CLI 用 selector）——
+  对既有图标注（v0.5.0 起 JPEG 直接进），ops kind ∈
   **rect/ellipse/arrow/line/**curve/arc/polyline**/text（v0.1.7 起中文可标注；v0.1.9 起可选
   `font`=字体族名 / `bold`=粗体开关，缺省微软雅黑+粗体，仅矢量路生效，
   未安装字体名 GDI+ 静默回退默认字体——**先 `fonts <子串>` 核名再写
@@ -75,10 +77,10 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   getBoundingClientRect），内部乘 dpr。越界=夹到边界+`bounds_warn`，
   完全在图外才报错；收据回显 `crop` 与 `crop_px`。
 - `resize <png|jpg> [--scale S|--width W|--max-side N] [--jpg Q]`——缩放；
-  `--dir D --out-dir O` 目录批处理（v0.5.0；同名不同扩展自动 -2 后缀）；
-- `info <png|jpg>`——`{format,w,h,bytes,path}` 一行 JSON（v0.5.0）
   `max_side` **只缩不放**，`scale`/`width` 允许放大；`--jpg` 直接出 JPEG
-  （收据 format/quality/bytes）。
+  （收据 format/quality/bytes）；`--dir D --out-dir O` 目录批处理
+  （v0.5.0；同名不同扩展自动 -2 后缀）。
+- `info <png|jpg>`——`{format,w,h,bytes,path}` 一行 JSON（v0.5.0）。
 - `compose (--src IMG|--area L T W H) [--box x,y,w,h] [--scale ...]
   [--rect ...] [--arrow ...] [--text "x,y:文字"] [--jpg Q] --out OUT`
   （v0.4.0）——一条命令出图：截屏/读图→裁→缩→标注→存盘。**标注坐标按
@@ -167,7 +169,7 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 
 ## MCP（ashot 域名，宿主注册后可用）
 
-v0.4.1 起 **22 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
+v0.6.1 起 **23 个工具**：`ashot_shot` / `ashot_screens` / `ashot_annotate` /
 `ashot_crop` / `ashot_resize` /
 `ashot_fonts` / `ashot_show` / `ashot_hash` / `ashot_diff` / `ashot_element` /
 `ashot_frames` / `ashot_frame_element` / `ashot_snapshot` / `ashot_cdp_tabs` /

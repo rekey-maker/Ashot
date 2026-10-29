@@ -51,7 +51,13 @@ _RECT_BODY = r"""
   const iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
   const area = Math.max(1, r.width * r.height);
   return {found: true, tag: el.tagName.toLowerCase(),
-    text: (el.innerText || el.value || "").slice(0, 80),
+    text: (el.getAttribute("aria-label") || el.getAttribute("placeholder")
+           || ((el.tagName.toLowerCase() === "input"
+                && /^(button|submit|reset)$/i.test(el.type || ""))
+               ? el.value : "")
+           || (["input", "textarea", "select"].indexOf(
+                el.tagName.toLowerCase()) >= 0 ? "" : el.innerText)
+           || "").slice(0, 80),
     local_x: r.left, local_y: r.top, w: r.width, h: r.height,
     visible: !!vis, visibility_source: visSrc,
     in_viewport: ix > 0 && iy > 0,
@@ -109,7 +115,13 @@ _SAME_ORIGIN_JS = r"""
   const iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
   const area = Math.max(1, r.width * r.height);
   return {found: true, tag: el.tagName.toLowerCase(),
-    text: (el.innerText || el.value || "").slice(0, 80),
+    text: (el.getAttribute("aria-label") || el.getAttribute("placeholder")
+           || ((el.tagName.toLowerCase() === "input"
+                && /^(button|submit|reset)$/i.test(el.type || ""))
+               ? el.value : "")
+           || (["input", "textarea", "select"].indexOf(
+                el.tagName.toLowerCase()) >= 0 ? "" : el.innerText)
+           || "").slice(0, 80),
     local_x: r.left, local_y: r.top,
     x: r.left + offX, y: r.top + offY,
     cx: cx0 + offX, cy: cy0 + offY, w: r.width, h: r.height,
@@ -341,21 +353,36 @@ def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
 
 _SNAPSHOT_JS = r"""
 (() => {
-  const MAX = %d;
-  const MAXD = 9;
+  const MAX = Math.max(1, Math.min(500, %d));
+  const MAXD = 12;
   const refs = {};
-  let n = 0;
+  let emitted = 0, n = 0, truncated = false;
+  const clean = s => (s || "").trim().replace(/\s+/g, " ").slice(0, 80);
   const vis = el => {
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return false;
-    const cs = getComputedStyle(el);
-    if (cs.visibility === "hidden" || cs.display === "none") return false;
-    if (parseFloat(cs.opacity || "1") === 0) return false;
+    if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) return false;
+    if (typeof el.checkVisibility === "function") {
+      if (!el.checkVisibility({opacityProperty: true, visibilityProperty: true,
+                               contentVisibilityAuto: true})) return false;
+    } else {
+      const cs = getComputedStyle(el);
+      if (cs.visibility === "hidden" || cs.display === "none"
+          || parseFloat(cs.opacity || "1") === 0) return false;
+    }
     return true;
   };
-  const txt = el => (el.getAttribute("aria-label") || el.getAttribute("alt")
-    || el.value || el.innerText || el.title || "").trim()
-    .replace(/\s+/g, " ").slice(0, 80);
+  const txt = el => {
+    const tag = el.tagName.toLowerCase();
+    const t = (el.getAttribute("type") || "").toLowerCase();
+    const aria = el.getAttribute("aria-label") || el.getAttribute("alt")
+      || el.getAttribute("placeholder") || el.getAttribute("title");
+    if (aria) return clean(aria);
+    if (tag === "input" && (t === "button" || t === "submit" || t === "reset"))
+      return clean(el.value);
+    if (tag === "input" || tag === "textarea" || tag === "select") return "";
+    return clean(el.innerText);
+  };
   const role = el => el.getAttribute("role") || el.tagName.toLowerCase();
   const interesting = el => {
     const t = el.tagName.toLowerCase();
@@ -364,30 +391,34 @@ _SNAPSHOT_JS = r"""
         || el.getAttribute("contenteditable") === "true") return true;
     return false;
   };
-  const cssPath = el => {
-    if (el.id) return "#" + CSS.escape(el.id);
+  const nth = cur => {
+    let sel = cur.tagName.toLowerCase();
+    const par = cur.parentElement;
+    if (par) {
+      const same = [...par.children].filter(c => c.tagName === cur.tagName);
+      sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+    }
+    return sel;
+  };
+  const cssPath = el => {   // 全链 nth-of-type：正常 DOM 下唯一（不截断、不靠 id）
     const parts = [];
     let cur = el;
-    while (cur && cur.nodeType === 1 && cur !== document.body) {
-      let sel = cur.tagName.toLowerCase();
-      const par = cur.parentElement;
-      if (par) {
-        const same = [...par.children].filter(c => c.tagName === cur.tagName);
-        if (same.length > 1) sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
-      }
-      parts.unshift(sel);
-      cur = par;
-      if (parts.length > 6) break;
+    while (cur && cur.nodeType === 1) {
+      parts.unshift(nth(cur));
+      if (cur === document.body) break;
+      cur = cur.parentElement;
     }
     return parts.join(" > ");
   };
   const walk = (el, depth) => {
-    if (n >= MAX || depth > MAXD) return null;
+    if (depth > MAXD) { truncated = true; return null; }
+    if (emitted >= MAX) { truncated = true; return null; }
+    emitted += 1;
     const kids = [];
     for (const c of el.children) {
+      if (emitted >= MAX) { truncated = true; break; }
       const k = walk(c, depth + 1);
       if (k) kids.push(k);
-      if (n >= MAX) break;
     }
     const name = txt(el);
     const show = interesting(el) || (kids.length === 0 && name);
@@ -406,7 +437,7 @@ _SNAPSHOT_JS = r"""
     return node;
   };
   const root = walk(document.body, 0);
-  return {tree: root, refs: refs, count: n,
+  return {tree: root, refs: refs, count: n, truncated: truncated,
           url: location.href, title: document.title,
           dpr: window.devicePixelRatio,
           scroll: [window.scrollX, window.scrollY]};
@@ -417,11 +448,19 @@ _SNAPSHOT_JS = r"""
 def snapshot(ws, max_nodes=150, timeout=15):
     """页面结构快照（v0.6.0）：Playwright MCP 同思路——结构化树 + ref，
     不靠像素猜坐标。每个可见节点带 `[ref=eN] [box=x,y,w,h]`（视口 CSS
-    像素）；refs 映射回 CSS 选择器，供 annotate 的 selector/ref 使用。
+    像素）；refs 映射回**全链 nth-of-type 选择器**（正常 DOM 下唯一）。
 
     零依赖：纯 Runtime.evaluate，不碰 Accessibility 域，也不抓图。
+    v0.6.1（审查）：节点预算独立于 ref 数（结构节点也计入），超了标
+    `truncated`；不读 input/textarea 的 value（密码/隐私），只认
+    aria-label/placeholder/alt/title；离屏/遮挡不算可见。
     """
-    js = _SNAPSHOT_JS % int(max_nodes)
+    try:
+        cap = int(max_nodes)
+    except (TypeError, ValueError):
+        raise ValueError("max_nodes 需要整数：%r" % (max_nodes,))
+    cap = max(1, min(500, cap))
+    js = _SNAPSHOT_JS % cap
     out = _eval_raw(ws, js, timeout)
     if not out:
         raise RuntimeError("页面快照为空")
@@ -430,7 +469,6 @@ def snapshot(ws, max_nodes=150, timeout=15):
     def fmt(node, depth):
         if not node:
             return
-        parts = ["-" * 1 + " " * 0]
         indent = "  " * depth
         head = "%s- %s" % (indent, node.get("role") or "?")
         if node.get("name"):
@@ -445,23 +483,33 @@ def snapshot(ws, max_nodes=150, timeout=15):
             fmt(k, depth + 1)
 
     fmt(out.get("tree"), 0)
-    return {"tree": "\n".join(lines), "refs": out.get("refs") or {},
+    tree = "\n".join(lines)
+    truncated = bool(out.get("truncated"))
+    if len(tree) > 200000:          # 极端页面兜底：别把上下文撑爆
+        tree = tree[:200000] + "\n…（截断）"
+        truncated = True
+    return {"tree": tree, "refs": out.get("refs") or {},
             "count": int(out.get("count") or 0),
+            "truncated": truncated,
             "url": out.get("url"), "title": out.get("title"),
             "dpr": out.get("dpr"), "scroll": out.get("scroll")}
 
 
-def apply_selectors(ws, ops, refs=None, timeout=15):
+def apply_selectors(ws, ops, refs=None, timeout=15, space="viewport"):
     """把 ops 里的 `selector`/`ref` 解析成像素坐标（v0.6.0）。
 
     - selector：CSS 选择器，实时取 element_rect（准，不靠猜）；
     - ref：snapshot 返回的 eN，经 refs 映射回 selector 再实时取；
     - 矩形族（rect/ellipse/mosaic/blur/spotlight/smarterase）填
-      x/y/w/h（CSS×dpr=物理像素，截图坐标）；text 填左上角；
+      x/y/w/h（CSS×dpr=物理像素）；text 填左上角；
       箭头/直线请直接用坐标（两端元素语义没定，不猜）；
-    - `pad`（可选）：向外扩的物理像素数（矩形族）。
-    适用视口截图；整页截图请自己加 scroll 偏移（收据里有 scroll）。
+    - `pad`（可选）：向外扩的物理像素数（矩形族）；
+    - `space`：`viewport`（默认，视口截图）或 `document`（整页截图，
+      自动加 scroll×dpr 偏移）。
+    v0.6.1（审查）：解析过的 op 标 `__resolved__`，全局 dpr 不再二次乘。
     """
+    if space not in ("viewport", "document"):
+        raise ValueError("space 只能是 viewport/document：%r" % (space,))
     out = []
     for op in ops:
         if not isinstance(op, dict):
@@ -469,32 +517,43 @@ def apply_selectors(ws, ops, refs=None, timeout=15):
         sel = op.get("selector")
         ref = op.get("ref")
         if ref:
+            if refs is None:
+                raise ValueError(
+                    "ref 仅 MCP 同连接可用（CLI 无快照缓存）；"
+                    "CLI 请用 selector 或坐标，或改用 MCP")
             info = (refs or {}).get(str(ref))
             if not info:
-                raise ValueError("ref 不存在（先调用 snapshot）：%r" % (ref,))
+                raise ValueError("ref 已过期或不存在（请重新 snapshot）：%r"
+                                 % (ref,))
             sel = info.get("selector")
         if not sel:
             out.append(op)
             continue
         rect = element_rect(ws, sel, timeout=timeout)
         k = float(op.get("dpr") or rect.get("dpr") or 1.0)
+        ox = oy = 0.0
+        if space == "document":
+            ox = float(rect.get("scroll_x") or 0) * k
+            oy = float(rect.get("scroll_y") or 0) * k
         kind = op.get("kind")
         o = dict(op)
         o.pop("selector", None)
         o.pop("ref", None)
+        o.pop("dpr", None)
         if kind in ("rect", "ellipse", "mosaic", "blur", "spotlight",
                     "smarterase"):
             pad = float(o.pop("pad", 0) or 0)
-            o["x"] = rect["x"] * k - pad
-            o["y"] = rect["y"] * k - pad
+            o["x"] = rect["x"] * k - pad + ox
+            o["y"] = rect["y"] * k - pad + oy
             o["w"] = rect["w"] * k + pad * 2
             o["h"] = rect["h"] * k + pad * 2
         elif kind == "text":
-            o["x"] = rect["x"] * k
-            o["y"] = rect["y"] * k
+            o["x"] = rect["x"] * k + ox
+            o["y"] = rect["y"] * k + oy
         else:
             raise ValueError("selector/ref 只支持矩形族与 text；"
                              "%r 请直接用坐标" % (kind,))
+        o["__resolved__"] = True
         out.append(o)
     return out
 

@@ -159,7 +159,8 @@ def _screens():
 
 
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
-              max_side=0, dpr=0.0, port=None, index=0, ws=None):
+              max_side=0, dpr=0.0, port=None, index=0, ws=None,
+              space="viewport"):
     """对既有 PNG/JPEG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
     arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
@@ -182,14 +183,29 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     原图（v0.1.5 P1 根修）。
     **v0.5.0**：image 支持 PNG/JPEG；**dpr>0 时 ops 坐标按 CSS→物理
     像素缩放（只缩放坐标，字号/线宽不变，缺省 0=不换算）**；text 的
-    `w`（布局宽）也会被缩放，换行位置可能变。"""
+    `w`（布局宽）也会被缩放，换行位置可能变。
+    **v0.6.0/0.6.1**：ops 可用 `selector` 或 `ref`（ref 来自
+    `ashot_snapshot`）直接按元素定位，矩形族与 text 支持，`pad` 外扩；
+    selector/ref 已含页面 dpr，**不要再传全局 dpr**（会二次乘，v0.6.1
+    已跳过）；`space="viewport"`（缺省）或 `"document"`（整页截图，
+    自动加 scroll 偏移）；ref 只对最近一次 snapshot 有效，页面导航后
+    报"ref 已过期"。"""
     png = imageio.read_png(str(image))
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
     if any(isinstance(o, dict) and (o.get("selector") or o.get("ref"))
            for o in (ops_list or [])):
         ws_url = _resolve_ws(port, index, ws)
         refs = _LAST_REFS.get("refs") if _LAST_REFS.get("ws") == ws_url else None
-        ops_list = dom.apply_selectors(ws_url, ops_list or [], refs=refs)
+        if refs and _LAST_REFS.get("url"):
+            cur = cdp.call(ws_url, "Runtime.evaluate",
+                           {"expression": "location.href",
+                            "returnByValue": True}, 10)
+            cur_url = (cur.get("result") or {}).get("value")
+            if cur_url and cur_url != _LAST_REFS["url"]:
+                raise ValueError("ref 已过期（页面已导航到 %r）；"
+                                 "请重新 snapshot" % (cur_url,))
+        ops_list = dom.apply_selectors(ws_url, ops_list or [], refs=refs,
+                                       space=space)
     if dpr:
         ops_list = annotate.scale_ops(ops_list or [], dpr)
     stats = {}
@@ -489,7 +505,8 @@ def _snapshot(port=None, index=0, ws=None, max_nodes=150):
     ws_url = _resolve_ws(port, index, ws)
     rec = dom.snapshot(ws_url, max_nodes=int(max_nodes or 150))
     _LAST_REFS.clear()
-    _LAST_REFS.update({"ws": ws_url, "refs": rec.get("refs") or {}})
+    _LAST_REFS.update({"ws": ws_url, "refs": rec.get("refs") or {},
+                       "url": rec.get("url"), "scroll": rec.get("scroll")})
     rec["ok"] = True
     return json.dumps(rec, ensure_ascii=False)
 

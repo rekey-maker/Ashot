@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.6.0**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.6.1**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
 
 ## 安装与要求
 
@@ -61,13 +61,13 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   v0.2.8 补 OOPIF/裁剪）
 - **交付**：落盘 / 剪贴板阅后即焚（`--clip`）/ 缺省 30 天 retention
   顺手清理旧图
-- **MCP**：stdio JSON-RPC 2.0，二十二工具 `ashot_shot` / `ashot_annotate` /
+- **MCP**：stdio JSON-RPC 2.0，二十三工具 `ashot_shot` / `ashot_annotate` /
   `ashot_screens` / `ashot_fonts`（v0.1.10 起）/ `ashot_show`（v0.1.12
   起）/ `ashot_cdp_tabs` + `ashot_cdp_shot`（v0.2.0）/ `ashot_cdp_key`
   + `ashot_cdp_wheel` + `ashot_cdp_click` + `ashot_cdp_drag`（v0.2.1）/
   `ashot_cdp_dblclick` + `ashot_cdp_type`（v0.2.3）/ `ashot_cdp_eval` +
   `ashot_cdp_view`（v0.2.5）/ `ashot_hash` + `ashot_diff` +
-  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8）/ `ashot_crop` + `ashot_resize`
+  `ashot_element` + `ashot_frames` + `ashot_frame_element`（v0.2.7-0.2.8）/ `ashot_snapshot`（v0.6.0）/ `ashot_crop` + `ashot_resize`
   （v0.4.0，裁切/缩放/JPEG）。**22 工具覆盖 CLI 的主要能力；
   `compose`/`info` 仅 CLI**；每个收据带 `ver`（识破旧进程）
 
@@ -150,7 +150,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十三工具（覆盖 CLI 主要�
 python -m pytest tests/ -q
 ```
 
-171 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+176 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -199,7 +199,7 @@ ashot/
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
-├── tests/test_ashot.py         # 121 项（主回归锁）
+├── tests/test_ashot.py         # 122 项（主回归锁）
 ├── tests/test_transform.py     # 30 项（裁切/缩放/JPEG）
 └── tests/test_shapes.py        # 19 项（曲线/弧线/折线）
 ```
@@ -212,5 +212,5 @@ ashot/
 
 - 版本史：[CHANGELOG.md](CHANGELOG.md)；设计文档索引：[docs/design/README.md](docs/design/README.md)
 - 审查与修复证据：[docs/review/](docs/review/)
-- 当前 0.5.1：JPEG 输入、`annotate --dpr/--template`、`info`、`resize --dir`；
-  并修复 v0.5.0 审查发现的问题（见 CHANGELOG）
+- 当前 0.6.1：MCP 精确定位（snapshot ref / selector 标注 / 预览 to_source）；
+  并修复 v0.6.0 审查发现的问题（见 CHANGELOG）

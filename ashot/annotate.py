@@ -515,6 +515,10 @@ def scale_ops(ops, factor):
     for op in ops:
         if not isinstance(op, dict):
             raise ValueError("每个 op 需要对象：%r" % (op,))
+        if op.get("__resolved__"):
+            # selector/ref 已在 dom.apply_selectors 里乘过 dpr，别二次乘
+            out.append(op)
+            continue
         o = dict(op)
         for key in _GEOM_KEYS:
             if key in o:
