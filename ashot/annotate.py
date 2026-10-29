@@ -43,6 +43,9 @@ from . import geometry
 
 DEFAULT_COLOR = (0xFF, 0x3B, 0x30)
 DEFAULT_WIDTH = 3
+WIDTH_MAX = 1000.0
+STROKE_KINDS = ("rect", "ellipse", "line", "curve", "arc", "polyline",
+                "arrow")
 
 
 def default_out(image):
@@ -473,7 +476,18 @@ def annotate_png(png_bytes, ops):
             op = json.loads(op)
         kind = op.get("kind")
         color = _color(op.get("color"))
-        width = int(op.get("width", DEFAULT_WIDTH))
+        # v0.4.1：小数线宽四舍五入（旧实现 int() 截断，1.9 只画 1px，
+        # 与矢量路差 2px）；<=0 / 过大一律报错，别静默不画（审查实测
+        # width=-3 时像素路零输出）
+        width_f = float(op.get("width", DEFAULT_WIDTH))
+        if kind in STROKE_KINDS:
+            if width_f <= 0:
+                raise ValueError("width 必须 > 0（%s）：%r"
+                                 % (kind, op.get("width")))
+            if width_f > WIDTH_MAX:
+                raise ValueError("width 过大（>%g）：%r"
+                                 % (WIDTH_MAX, op.get("width")))
+        width = max(1, int(width_f + 0.5))
         if kind in ("step", "number", "text"):
             # v0.1.3（二轮审查 P1-B 收口）：text **无圆底**——v0.1.2 重构
             # 把前置 circle_filled 残留给了三元组（step/number 画两遍、

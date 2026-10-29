@@ -23,6 +23,9 @@ from ._coerce import as_bool
 DEFAULT_COLOR = "#FF3B30"
 DEFAULT_WIDTH = 3
 DEFAULT_FONT = "Microsoft YaHei UI"   # v0.1.9 前写死于渲染脚本，现提为缺省值
+WIDTH_MAX = 1000.0    # 线宽上限：像素路按 width//2 循环，过大等于 DoS
+STROKE_KINDS = ("rect", "ellipse", "line", "curve", "arc", "polyline",
+                "arrow")
 
 
 def _hex(color):
@@ -151,6 +154,13 @@ def compile_ops(ops):
         kind = op.get("kind")
         color = _hex(op.get("color"))
         width = float(op.get("width", DEFAULT_WIDTH))
+        if kind in STROKE_KINDS:
+            if width <= 0:
+                raise ValueError("width 必须 > 0（%s）：%r"
+                                 % (kind, op.get("width")))
+            if width > WIDTH_MAX:
+                raise ValueError("width 过大（>%g）：%r"
+                                 % (WIDTH_MAX, op.get("width")))
         if kind in ("mosaic", "blur", "spotlight", "smarterase"):
             pixel_ops.append(op)
             continue

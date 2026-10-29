@@ -45,7 +45,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （**度**，顺时针，y 向下；sweep 负=逆时针，>360 夹到一圈；
   也可用 end 代替 sweep）/ `polyline` points=[[x,y],...] 或
   coords="x1,y1,x2,y2,..."。三者都进 `bounds_warn`。
-  **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）；`arrow` 缺省=
+  **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）——所有描边
+  原语（rect/ellipse/line/curve/arc/polyline/arrow）都支持，可给小数
+  （2.5），`<=0` 或 `>1000` 报错；矢量路与像素降级路按四舍五入对齐；`arrow` 缺省=
   渐变实心箭头（v0.1.8 重校准：细杆恒定≈width + 1:1 细三角头，头长=
   头宽=3.5×width，短箭头长封顶 0.4×全长；端点定总长，杆=总长−头可
   自由伸缩；`"style":"line"` 回退旧直杆）；`rect` 可选 `radius`（圆角

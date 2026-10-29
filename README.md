@@ -27,7 +27,9 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   换行，越界进 `bounds_warn` 而不是悄悄被裁）/ `mosaic` / `blur` /
   `step`（同次调用自动递增编号）/ `number` / `spotlight`（聚光灯压暗）/
   `smarterase`（边缘均值色填充）
-  - 每个 op 独立 `color`（#RRGGBB）与 `width`（粗细）
+  - 每个 op 独立 `color`（#RRGGBB）与 `width`（粗细，**所有描边原语**都
+    支持，可给小数如 2.5；`<=0` 或 `>1000` 报错）。箭头/曲线的 width
+    语义：箭头=头部粗细基准，曲线=笔宽
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
 - **裁切 / 缩放 / JPEG 交付**（v0.4.0，补 imgtool 的缺口）：对**已有
   图片**裁切（`crop --box x,y,w,h`）、缩放（`resize --scale/--width/
@@ -140,7 +142,7 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十二工具与 CLI 同能力（�
 python -m pytest tests/ -q
 ```
 
-158 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+160 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与

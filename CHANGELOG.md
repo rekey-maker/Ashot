@@ -17,6 +17,15 @@
   GDI+ 内部同样把曲线展平成折线；DrawArc 的角度制/顺时针/start+sweep
   与我们的参数方程一致。
 
+### 线宽（width）收口
+- 小数线宽两路对齐：像素降级路旧实现 `int()` 截断（1.9 → 1px，矢量
+  3px；3.6 → 3px vs 5px），改为四舍五入，实测 0.8/1.9/2.5/3.6/6.4/20
+  六档两路差 ≤1px。
+- 非法线宽报错：`width <= 0`（旧实现像素路静默零输出）或 `>1000`
+  （像素路按 width//2 循环，过大等于 DoS）一律 ValueError。
+- 新增 2 项测试：七种描边原语都透传 width（箭头为 fill，粗细看多边形
+  跨度）；小数宽度两路一致 + 非法值拒绝。
+
 ### 审查修复（子 agent 只读审查，2026-10-29）
 - **P1**：有限但超范围的坐标（如 1e308）会在采样里派生 inf → JSON `Infinity` → PS 失败降级 → `int(round(inf))` 抛 OverflowError。现在 `geometry._finite` 统一限制 `|v| ≤ 1e7`，`bezier_points`/`arc_points` 入口自校验（含 NaN sweep 不再被 min/max 静默夹成 360°）。
 - **P2**：像素降级路先做 Cohen–Sutherland 线段裁剪（`clip_segment`），画布外的远点不再白跑百万步 Bresenham。
@@ -24,8 +33,8 @@
 - 审查另报的「降级路 stroke 无 bbox → 越界静默」经复测**不成立**：`_shape_boxes` 本就按采样点算 stroke 的 bbox，降级路照样产出 `bounds_warn`（已加实测）。
 
 ### 测试
-- 新增 `tests/test_shapes.py` 17 项（端点/对称/方向/夹取/三种写法/
-  抗锯齿中间色/像素路同图/越界告警/CLI 端到端）。全套 **158 项**通过。
+- 新增 `tests/test_shapes.py` 19 项（端点/对称/方向/夹取/三种写法/
+  抗锯齿中间色/像素路同图/越界告警/CLI 端到端）。全套 **160 项**通过。
 
 ## [0.4.0] - 2026-10-29
 

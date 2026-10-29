@@ -123,6 +123,68 @@ def test_coord_range_guard_and_clip_segment():
         (0.0, 50.0, 100.0, 50.0)
 
 
+def test_width_is_honored_by_every_stroke_kind():
+    """所有描边原语都吃 width（线段类的粗细），编译后原样透传。"""
+    kinds = {
+        "rect": {"x": 10, "y": 10, "w": 60, "h": 40},
+        "ellipse": {"x": 10, "y": 10, "w": 60, "h": 40},
+        "line": {"x1": 0, "y1": 0, "x2": 50, "y2": 20},
+        "curve": {"x0": 0, "y0": 40, "c1x": 20, "c1y": 0,
+                  "c2x": 40, "c2y": 40, "x1": 60, "y1": 10},
+        "arc": {"x": 0, "y": 0, "w": 40, "h": 40, "start": 0, "sweep": 90},
+        "polyline": {"points": [[0, 0], [20, 20], [40, 0]]},
+        "arrow": {"x1": 0, "y1": 0, "x2": 50, "y2": 18},
+    }
+    for kind, geom in kinds.items():
+        spec = vector.compile_ops([dict(kind=kind, width=12, **geom)])
+        shapes = spec["shapes"]
+        assert shapes, kind
+        if kind == "arrow":
+            # 实心箭头不是 stroke：粗细体现在多边形几何上（宽度基准）
+            assert shapes[0]["t"] == "fill", shapes[0]
+        else:
+            assert all(s.get("width") == 12.0 for s in shapes), (kind, shapes)
+    # 箭头的 width 语义：越大越粗（多边形纵向跨度变大）
+    thin = vector.compile_ops([{"kind": "arrow", "x1": 0, "y1": 0,
+                                "x2": 100, "y2": 0, "width": 4}])
+    fat = vector.compile_ops([{"kind": "arrow", "x1": 0, "y1": 0,
+                               "x2": 100, "y2": 0, "width": 16}])
+    span = lambda spec: max(p[1] for p in spec["shapes"][0]["pts"])  # noqa: E731
+    assert span(fat) > span(thin)
+    # 不写 width = 缺省 3
+    spec = vector.compile_ops([{"kind": "line", "x1": 0, "y1": 0,
+                                "x2": 9, "y2": 9}])
+    assert spec["shapes"][0]["width"] == 3.0
+
+
+def test_width_rounding_parity_and_validation():
+    """小数线宽两路必须一致（旧实现像素路 int() 截断：1.9 画 1px vs 矢量 3px）；
+    width<=0 或过大一律报错，不静默不画。"""
+
+    def thick(png, x=100):
+        w, _, px = annotate._decode_png(png)
+        n = 0
+        for y in range(240):
+            i = (y * w + x) * 4
+            if (px[i], px[i + 1], px[i + 2]) != (0x20, 0x20, 0x20):
+                n += 1
+        return n
+
+    for wd in (0.8, 1.9, 2.5, 3.6, 6.4):
+        ops = [{"kind": "line", "x1": 20, "y1": 120, "x2": 180, "y2": 120,
+                "width": wd}]
+        vec, _, _ = annotate_gdi.annotate_png_vector(_bg(), ops)
+        px = annotate.annotate_png(_bg(), ops)
+        assert abs(thick(vec) - thick(px)) <= 1, (wd, thick(vec), thick(px))
+    for bad in (0, -3, 5000):
+        ops = [{"kind": "line", "x1": 20, "y1": 120, "x2": 180, "y2": 120,
+                "width": bad}]
+        with pytest.raises(ValueError):
+            annotate_gdi.annotate_png_vector(_bg(), ops)
+        with pytest.raises(ValueError):
+            annotate.annotate_png(_bg(), ops)
+
+
 def test_parse_arc_and_polyline_forms():
     assert geometry.parse_arc({"x": 0, "y": 0, "w": 10, "h": 10,
                                "start": 30, "sweep": 120}) == \
