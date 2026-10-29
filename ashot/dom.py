@@ -542,11 +542,10 @@ def apply_selectors(ws, ops, refs=None, timeout=15, space="viewport"):
         o.pop("dpr", None)
         if kind in ("rect", "ellipse", "mosaic", "blur", "spotlight",
                     "smarterase"):
-            pad = float(o.pop("pad", 0) or 0)
-            o["x"] = rect["x"] * k - pad + ox
-            o["y"] = rect["y"] * k - pad + oy
-            o["w"] = rect["w"] * k + pad * 2
-            o["h"] = rect["h"] * k + pad * 2
+            o["x"] = rect["x"] * k + ox
+            o["y"] = rect["y"] * k + oy
+            o["w"] = rect["w"] * k
+            o["h"] = rect["h"] * k
         elif kind == "text":
             o["x"] = rect["x"] * k + ox
             o["y"] = rect["y"] * k + oy

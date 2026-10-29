@@ -925,17 +925,19 @@ def drag_events(x1, y1, x2, y2, steps=0, button="left", human=True,
         seq[-1]["_delay_ms"] = 0.0 if zero else rnd.uniform(40, 90)
         for i, (te, x, y) in enumerate(traj):
             seq.append({"type": "mouseMoved", "x": x, "y": y,
-                        "buttons": press, "modifiers": 0,
+                        "button": button, "buttons": press, "modifiers": 0,
                         "_delay_ms": delays[i]})
         # 末端过冲 + 回退（人类调整动作；幅度由档位给）
         if not zero and dist > 20 and p["over"][1] > 0:
             ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
             ov = rnd.uniform(*p["over"])
-            seq.append({"type": "mouseMoved", "buttons": press,
+            seq.append({"type": "mouseMoved", "button": button,
+                        "buttons": press,
                         "x": round(x2 + ux * ov, 2),
                         "y": round(y2 + uy * ov, 2), "modifiers": 0,
                         "_delay_ms": rnd.uniform(*p["settle"])})
-            seq.append({"type": "mouseMoved", "buttons": press,
+            seq.append({"type": "mouseMoved", "button": button,
+                        "buttons": press,
                         "x": x2, "y": y2, "modifiers": 0,
                         "_delay_ms": rnd.uniform(*p["settle"])})
         else:
@@ -946,7 +948,7 @@ def drag_events(x1, y1, x2, y2, steps=0, button="left", human=True,
         steps = max(1, int(steps or 8))
         for i in range(1, steps + 1):
             t = i / steps
-            seq.append({"type": "mouseMoved",
+            seq.append({"type": "mouseMoved", "button": button,
                         "x": round(x1 + (x2 - x1) * t, 2),
                         "y": round(y1 + (y2 - y1) * t, 2),
                         "buttons": press, "modifiers": 0})
@@ -1210,6 +1212,36 @@ def _restore_fixed(ws, timeout=10):
              {"expression": _RESTORE_FIXED_JS, "returnByValue": True}, timeout)
     except Exception:  # noqa: BLE001
         pass
+
+
+_SCROLLABLES_JS = r"""
+(() => {
+  const out = [];
+  for (const e of document.querySelectorAll("*")) {
+    if (e.scrollHeight > e.clientHeight + 4 || e.scrollWidth > e.clientWidth + 4) {
+      out.push({tag: e.tagName.toLowerCase(), id: e.id || "",
+                cls: (typeof e.className === "string" ? e.className : "").slice(0, 60),
+                scroll_top: Math.round(e.scrollTop),
+                scroll_left: Math.round(e.scrollLeft),
+                scroll_h: e.scrollHeight, client_h: e.clientHeight,
+                scroll_w: e.scrollWidth, client_w: e.clientWidth});
+      if (out.length >= 8) break;
+    }
+  }
+  return out;
+})()
+"""
+
+
+def scrollables(ws, timeout=10):
+    """页面里真正能滚的容器（v0.6.2）：window.scrollY 只反映 document，
+    内部滚动容器（如抖音整页 div）要用 scrollTop。返回前 8 个
+    {tag,id,cls,scroll_top,scroll_left,scroll_h,client_h,scroll_w,client_w}。"""
+    res = call(ws, "Runtime.evaluate",
+               {"expression": _SCROLLABLES_JS, "returnByValue": True}, timeout)
+    if res.get("exceptionDetails"):
+        return []
+    return (res.get("result") or {}).get("value") or []
 
 
 def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):

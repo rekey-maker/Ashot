@@ -24,6 +24,71 @@ DEFAULT_COLOR = "#FF3B30"
 DEFAULT_WIDTH = 3
 DEFAULT_FONT = "Microsoft YaHei UI"   # v0.1.9 前写死于渲染脚本，现提为缺省值
 WIDTH_MAX = 1000.0    # 线宽上限：像素路按 width//2 循环，过大等于 DoS
+_RECT_PAD_KINDS = ("rect", "ellipse", "mosaic", "blur", "spotlight",
+                    "smarterase")
+_ALLOWED_KEYS = {
+    "kind", "x", "y", "w", "h", "x1", "y1", "x2", "y2",
+    "x0", "y0", "c1x", "c1y", "c2x", "c2y", "points", "coords", "area",
+    "color", "width", "radius", "text", "size", "font", "bold", "value",
+    "n", "style", "dim", "block", "start", "sweep", "dpr",
+    "selector", "ref", "pad",
+    "__resolved__",
+}
+
+
+def _box4(op):
+    """取 op 的 x,y,w,h（显式键或 area/coords 逗号串）。"""
+    if all(op.get(k) is not None for k in ("x", "y", "w", "h")):
+        return [float(op[k]) for k in ("x", "y", "w", "h")]
+    joined = op.get("area") or op.get("coords")
+    if isinstance(joined, str):
+        parts = [x for x in str(joined).replace(" ", ",").split(",") if x.strip()]
+        if len(parts) == 4:
+            try:
+                return [float(x) for x in parts]
+            except ValueError:
+                pass
+    raise ValueError("pad 需要 x,y,w,h 或 area/coords 四元组：%r" % (op,))
+
+
+def apply_pad(ops):
+    """统一处理 `pad`（v0.6.2）：矩形族向外扩 pad 像素，坐标/selector 都生效；
+    非矩形族用 pad 直接报错；同时**拒绝未知字段**（拼错字段不再被静默吞）。
+
+    调用点：annotate_png（像素路）与 annotate_png_vector（矢量路）入口。
+    """
+    if not isinstance(ops, list):
+        return ops
+    out = []
+    for op in ops:
+        if isinstance(op, str):
+            out.append(op)
+            continue
+        if not isinstance(op, dict):
+            raise ValueError("op 需要对象：%r" % (op,))
+        unknown = set(op) - _ALLOWED_KEYS
+        if unknown:
+            raise ValueError("未知 op 字段 %s（kind=%r）——拼写检查，"
+                             "支持字段见 SKILL/README"
+                             % (sorted(unknown), op.get("kind")))
+        pad = op.get("pad")
+        if pad in (None, "", 0, 0.0):
+            out.append(op)
+            continue
+        if op.get("kind") not in _RECT_PAD_KINDS:
+            raise ValueError("pad 只支持矩形族 %s：kind=%r"
+                             % (list(_RECT_PAD_KINDS), op.get("kind")))
+        pad = float(pad)
+        x, y, w, h = _box4(op)
+        o = dict(op)
+        for k in ("area", "coords", "pad"):
+            o.pop(k, None)
+        o.update({"x": x - pad, "y": y - pad,
+                  "w": w + 2 * pad, "h": h + 2 * pad})
+        out.append(o)
+    return out
+
+
 STROKE_KINDS = ("rect", "ellipse", "line", "curve", "arc", "polyline",
                 "arrow")
 

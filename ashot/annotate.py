@@ -39,7 +39,7 @@ import os
 import struct
 import zlib
 
-from . import geometry
+from . import geometry, vector
 
 DEFAULT_COLOR = (0xFF, 0x3B, 0x30)
 DEFAULT_WIDTH = 3
@@ -543,6 +543,7 @@ def annotate_png(png_bytes, ops):
     op 形如 {"kind": "rect", "x": .., ..}；坐标数组形 "100,100,200,50"
     亦可（agent 友好）。未知 kind 如实报错（绝不静默跳过）。
     step 编号在同一调用内自动递增（跨调用不共享状态——无全局账本）。"""
+    ops = vector.apply_pad(ops)
     cv = Canvas(png_bytes)
     step_n = 0
     for op in ops:

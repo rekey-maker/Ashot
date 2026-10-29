@@ -741,6 +741,10 @@ def _cmd_cdp_view(a):
         if lay["vw"] and lay["vh"] and dpr:
             rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
                            % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
+        try:
+            rec["scrollables"] = cdp.scrollables(ws)
+        except Exception:  # noqa: BLE001 —— 附加信息，失败不拖垮
+            pass
         print(json.dumps(rec, ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001

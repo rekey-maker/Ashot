@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ashot import __version__, annotate, output  # noqa: E402
+from ashot import __version__, annotate, output, vector  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -2826,7 +2826,9 @@ def test_apply_selectors_stub(monkeypatch):
     assert (out[0]["x"], out[0]["y"], out[0]["w"], out[0]["h"]) == (
         15, 30, 150, 60)
     assert (out[1]["x"], out[1]["y"]) == (15, 30)
-    assert (out[2]["x"], out[2]["w"]) == (13, 154)
+    assert (out[2]["x"], out[2]["w"]) == (15, 150)   # pad 交给 apply_pad
+    padded = vector.apply_pad(out)
+    assert (padded[2]["x"], padded[2]["w"]) == (13, 154)
     import pytest as _pytest
     with _pytest.raises(ValueError):
         dom.apply_selectors("ws://x", [{"kind": "arrow", "selector": "#a",
@@ -2906,3 +2908,60 @@ def test_preview_to_source_tall():
     assert info["height"] <= 4000
     assert info["to_source"] == round(400 / float(info["width"]), 4)
     assert info["src"] == [400, 8000]
+
+
+def test_drag_moves_carry_left_button():
+    """拖拽移动事件必须带 button=left（原生 range 只认这个；v0.6.2）。"""
+    from ashot import cdp as cdp_mod
+    for human in (False, True):
+        seq = cdp_mod.drag_events(10, 10, 210, 10, steps=4, human=human, seed=1)
+        moves = [e for e in seq if e["type"] == "mouseMoved"][1:]
+        assert moves and all(e.get("button") == "left" for e in moves), human
+        assert all(e.get("buttons") == 1 for e in moves), human
+
+
+def _red_bbox_v062(png_bytes):
+    w, h, px = annotate._decode_png(png_bytes)
+    xs, ys = [], []
+    for y in range(h):
+        for x in range(w):
+            i = (y * w + x) * 4
+            if px[i] > 200 and px[i + 1] < 80 and px[i + 2] < 80:
+                xs.append(x); ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+def test_pad_without_selector_v062():
+    """pad 对坐标型矩形族也生效（旧实现只对 selector 生效，静默吞掉）。"""
+    png = _solid(200, 100)
+    out = annotate.annotate_png(png, [{"kind": "rect", "x": 50, "y": 30,
+                                       "w": 40, "h": 20, "width": 2,
+                                       "pad": 5, "color": "#FF0000"}])
+    bbox = _red_bbox_v062(out)
+    # 像素路线宽 2 会向两侧各溢 1px；中心几何必须是 45,25..95,55
+    assert 43 <= bbox[0] <= 46 and 23 <= bbox[1] <= 26, bbox
+    assert 94 <= bbox[2] <= 97 and 54 <= bbox[3] <= 57, bbox
+    assert bbox[2] - bbox[0] >= 49 and bbox[3] - bbox[1] >= 30, bbox
+
+
+def test_unknown_op_field_rejected():
+    """拼错字段不再静默吞（未知字段直接报错）。"""
+    import pytest as _pytest
+    png = _solid(40, 20)
+    with _pytest.raises(ValueError) as ei:
+        annotate.annotate_png(png, [{"kind": "rect", "x": 1, "y": 1, "w": 5,
+                                     "h": 5, "colour": "#FF0000"}])
+    assert "未知 op 字段" in str(ei.value)
+    with _pytest.raises(ValueError):
+        annotate.annotate_png(png, [{"kind": "arrow", "x1": 0, "y1": 0,
+                                     "x2": 5, "y2": 5, "pad": 3}])
+
+
+def test_scrollables_stub(monkeypatch):
+    from ashot import cdp as cdp_mod
+    payload = [{"tag": "div", "id": "sc", "scroll_h": 1000,
+                "client_h": 100, "scroll_top": 0}]
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": payload}})
+    rec = cdp_mod.scrollables("ws://x")
+    assert rec[0]["scroll_h"] == 1000

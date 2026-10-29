@@ -157,7 +157,10 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   `occluded`（中心点 elementFromPoint）/`pointer_events`/dpr/滚动。
   **坐标可直接喂 cdp-click**；截图坐标要先 × to_css，别混用。
 - `snapshot`——页面结构快照：`[ref=eN] [box=x,y,w,h]`（视口 CSS），
-  refs 映射回 CSS 选择器（v0.6.0；比看截图猜坐标准）。
+  refs 映射回 CSS 选择器（v0.6.0；比看截图猜坐标准）。selector/ref 已含
+  页面 dpr，**别再传全局 dpr**；ref 只对最近一次 snapshot 有效。
+- `cdp-view` 的 `scrollables`：内部滚动容器（scrollTop/scrollHeight）；
+  `content_h` 只反映 document，别拿它判断能否滚动。
 - `frames`——frame 树（id/url/parent/depth）+ 能取到的 iframe 矩形。
 - `frame-element <iframe选择器|JSON数组> <选择器>`——iframe 内元素 →
   主页面视口坐标；同源任意深度、跨域同进程、**跨站 OOPIF**（Target

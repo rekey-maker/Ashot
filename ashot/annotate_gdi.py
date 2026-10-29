@@ -223,6 +223,7 @@ def annotate_png_vector(png_bytes, ops, stats=None):
     from . import annotate as _px   # 像素画布（降级路 + 像素 ops 叠加路）
     if stats is None:
         stats = {}
+    ops = vector.apply_pad(ops)
     spec = vector.compile_ops(ops)
     spec["_src_png"] = png_bytes
     pixel_n = len(spec["pixel_ops"])

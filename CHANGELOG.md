@@ -2,6 +2,32 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.6.2] - 2026-10-29
+
+### 修复（另一窗口 v0.6.x 实弹测试反馈）
+- **原生 `<input type=range>` 拖不动**：CDP 的 mouseMoved 缺 `button`
+  字段（默认 none），原生 range 只认按下状态的 move。现在拖拽的每个
+  move 都带 `button=left`（human 与直线两条路径都修）；实测从 value=8
+  拖到 82（改前停在 9）。自定义 div 滑块不受影响。
+- **`pad` 只对 selector 生效、坐标型被静默吞**：`pad` 提到公共入口
+  （`vector.apply_pad`），矩形族坐标型/selector 型都外扩；非矩形族用
+  pad 直接报错。
+- **未知 op 字段静默吞**：`apply_pad` 增加字段白名单，`colour`/`widht`
+  这类拼写错误直接 `ValueError`（零静默）。
+- **内部滚动容器不可见**：`cdp-view` 新增 `scrollables`（含
+  scrollTop/scrollHeight/clientHeight）——`content_h` 只反映 document，
+  不再用它判断"页面能不能滚"。
+
+### 文档/语义澄清
+- `selector`/`ref` 已按页面 dpr 换算；显式 `dpr` 是**覆盖**不是叠乘
+  （v0.6.1 起跳过二次乘）。
+- `ref` 来自最近一次 snapshot，跨调用/导航会失效；日常优先 selector。
+- `pad` 现在坐标型也生效（此前只对 selector）。
+
+### 测试
+- **180 项全绿**（新增 4：拖拽 move 带 button、坐标型 pad、未知字段拒绝、
+  scrollables 桩）。
+
 ## [0.6.1] - 2026-10-29
 
 ### 审查修复（v0.6.0 两路子 agent 只读审查）
