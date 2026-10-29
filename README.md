@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.6.3**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.6.4**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
 
 ## 安装与要求
 
@@ -147,10 +147,11 @@ stdio JSON-RPC 2.0（协议 2024-11-05），二十三工具（覆盖 CLI 主要�
 ## 测试
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests/ -q          # 185 项（E2E 默认 skip）
+$env:ASHOT_E2E=1; python -m pytest tests/test_browser_e2e.py -q   # 真浏览器 4 项
 ```
 
-185 项：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+185 项（+4 项可选 E2E）：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与

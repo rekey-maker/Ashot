@@ -40,6 +40,7 @@ import struct
 import zlib
 
 from . import geometry, vector
+from ._ops import ResolvedOp
 
 DEFAULT_COLOR = (0xFF, 0x3B, 0x30)
 DEFAULT_WIDTH = 3
@@ -515,7 +516,7 @@ def scale_ops(ops, factor):
     for op in ops:
         if not isinstance(op, dict):
             raise ValueError("每个 op 需要对象：%r" % (op,))
-        if op.get("__resolved__"):
+        if isinstance(op, ResolvedOp):
             # selector/ref 已在 dom.apply_selectors 里乘过 dpr，别二次乘
             out.append(op)
             continue

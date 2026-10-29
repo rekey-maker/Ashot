@@ -734,17 +734,20 @@ def _cmd_cdp_view(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
-        lay, dpr = cdp.layout(ws, timeout=int(getattr(a, "timeout", 15) or 15))
+        lay, dpr = cdp.layout(ws, timeout=int(getattr(a, "timeout", 15) or 15),
+                              include_scrollables=True)
         rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
                "content_w": lay["content_w"], "content_h": lay["content_h"],
                "dpr": dpr}
         if lay["vw"] and lay["vh"] and dpr:
             rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
                            % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
-        try:
-            rec["scrollables"] = cdp.scrollables(ws)
-        except Exception as e:  # noqa: BLE001 —— 失败亮牌，不静默
-            rec["scrollables_error"] = str(e)[:200]
+        if "scrollables" in lay:
+            rec["scrollables"] = lay["scrollables"]
+            if lay.get("scrollables_truncated"):
+                rec["scrollables_truncated"] = True
+        if lay.get("scrollables_error"):
+            rec["scrollables_error"] = lay["scrollables_error"]
         print(json.dumps(rec, ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001

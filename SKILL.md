@@ -163,7 +163,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   **坐标可直接喂 cdp-click**；截图坐标要先 × to_css，别混用。
 - `snapshot`——页面结构快照：`[ref=eN] [box=x,y,w,h]`（视口 CSS），
   refs 映射回 CSS 选择器（v0.6.0；比看截图猜坐标准）。selector/ref 已含
-  页面 dpr，**别再传全局 dpr**；ref 只对最近一次 snapshot 有效。
+  页面 dpr，**别再传全局 dpr**（坐标型 op 传 dpr 会报错）；ref 只对最近
+  一次 snapshot 有效。
 - `cdp-view` 的 `scrollables`：内部滚动容器（`scroll_top/scroll_h/client_h`
   + `selector/rect/overflow_*`；只收 overflow:auto|scroll|overlay）；
   `content_h` 只反映 document，别拿它判断能否滚动。

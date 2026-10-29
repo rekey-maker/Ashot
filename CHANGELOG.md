@@ -2,6 +2,31 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.6.4] - 2026-10-29
+
+### 小尾巴处理（调研 + 落地）
+- **scrollables 并进 layout 的同一次求值**：`cdp.layout(include_scrollables=True)`
+  把 dpr/scroll/scrollables 合成一条 `Runtime.evaluate`——`cdp-view` 从
+  3 次协议往返回到 2 次（不再单独开 WS 会话）；扫描上限 3000 节点，
+  超了给 `scrollables_truncated`。判据按 [MDN scrollHeight](https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollHeight)
+  的官方写法：`scrollHeight > clientHeight` **且** computed
+  `overflow` 为 auto/scroll/overlay。
+- **`__resolved__` 可伪造 → 换成 `ResolvedOp` 哨兵**：`ops` 里不再有
+  `__resolved__` 键，改用 `dict` 子类（`ashot/_ops.py`）标记"已乘过 dpr"；
+  JSON 反序列化只能产出普通 dict，客户端无法伪造来跳过 dpr。
+- **坐标型 op 传 `dpr` 直接报错**：op 级 dpr 只对 selector/ref 有意义；
+  坐标型请用全局 `--dpr`，不再静默忽略。
+- **真浏览器 E2E（可选）**：新增 `tests/test_browser_e2e.py`，用本机
+  Edge/Chrome + 自家 CDP 起临时 profile，锁住单元测试锁不住的四件事：
+  原生 range 拖拽、快照选择器唯一/密码掩码、scrollables overflow 过滤、
+  selector 标注落点。默认跳过，`ASHOT_E2E=1` 才跑（**不引入 Playwright
+  依赖**，参考 [pytest-playwright](https://playwright.dev/python/docs/test-runners)
+  的 fixture 模式）。
+
+### 测试
+- 常规 **185 项全绿** + **4 项 E2E 跳过**（`ASHOT_E2E=1` 时 4 项全过，
+  实测 2.8s）。
+
 ## [0.6.3] - 2026-10-29
 
 ### 复审修复（v0.6.2 两路子 agent 只读复审）

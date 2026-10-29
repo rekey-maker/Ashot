@@ -1068,7 +1068,56 @@ def evaluate(ws, js, timeout=30, await_promise=False, return_by_value=True):
     return res
 
 
-def layout(ws, timeout=15):
+_VIEW_JS = r"""
+(() => {
+  const out = [];
+  let scanned = 0;
+  const path = el => {
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      let sel = cur.tagName.toLowerCase();
+      const par = cur.parentElement;
+      if (par) {
+        const same = [...par.children].filter(c => c.tagName === cur.tagName);
+        sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+      }
+      parts.unshift(sel);
+      if (cur === document.body) break;
+      cur = par;
+    }
+    return parts.join(" > ");
+  };
+  for (const e of document.querySelectorAll("*")) {
+    if (++scanned > 3000) break;
+    if (e === document.documentElement) continue;
+    const cs = getComputedStyle(e);
+    const oy = cs.overflowY, ox = cs.overflowX;
+    const canY = /(auto|scroll|overlay)/.test(oy)
+                 && e.scrollHeight > e.clientHeight + 4;
+    const canX = /(auto|scroll|overlay)/.test(ox)
+                 && e.scrollWidth > e.clientWidth + 4;
+    if (!canY && !canX) continue;
+    const r = e.getBoundingClientRect();
+    out.push({tag: e.tagName.toLowerCase(), id: e.id || "",
+              cls: (typeof e.className === "string" ? e.className : "").slice(0, 60),
+              selector: path(e), overflow_x: ox, overflow_y: oy,
+              scroll_top: Math.round(e.scrollTop),
+              scroll_left: Math.round(e.scrollLeft),
+              scroll_h: e.scrollHeight, client_h: e.clientHeight,
+              scroll_w: e.scrollWidth, client_w: e.clientWidth,
+              rect: [Math.round(r.left), Math.round(r.top),
+                     Math.round(r.width), Math.round(r.height)]});
+    if (out.length >= 8) break;
+  }
+  return {dpr: window.devicePixelRatio,
+          scrollX: window.scrollX || 0, scrollY: window.scrollY || 0,
+          scrollables: out, truncated: scanned > 3000};
+})()
+"""
+
+
+def layout(ws, timeout=15, include_scrollables=False):
     """标签页布局信息 -> (视口 dict, dpr)。
     Page.getLayoutMetrics（cssLayoutViewport = CSS 像素）+ devicePixelRatio。
     用途：把**截图像素坐标**换算成**点击用的 CSS 坐标**——截图出图尺寸
@@ -1099,17 +1148,22 @@ def layout(ws, timeout=15):
     try:
         # 一次求值拿齐 dpr + 滚动位置（v0.2.6 Q06：全页截图的坐标是
         # **文档坐标**，点首屏以下要减 scrollY——收据得给出这个数）
+        expr = (_VIEW_JS if include_scrollables else
+                "({dpr: window.devicePixelRatio,"
+                " scrollY: (window.scrollY||0),"
+                " scrollX: (window.scrollX||0)})")
         r = call(ws, "Runtime.evaluate", {
-            "expression": "({dpr: window.devicePixelRatio,"
-                          " scrollY: (window.scrollY||0),"
-                          " scrollX: (window.scrollX||0)})",
-            "returnByValue": True}, timeout)
+            "expression": expr, "returnByValue": True}, timeout)
         val = (r.get("result") or {}).get("value") or {}
         dpr = val.get("dpr")
         out["scroll_y"] = val.get("scrollY")
         out["scroll_x"] = val.get("scrollX")
-    except Exception:  # noqa: BLE001 —— dpr/滚动是可选附加项
-        pass
+        if include_scrollables:
+            out["scrollables"] = val.get("scrollables") or []
+            out["scrollables_truncated"] = bool(val.get("truncated"))
+    except Exception as e:  # noqa: BLE001 —— dpr/滚动是可选附加项
+        if include_scrollables:
+            out["scrollables_error"] = str(e)[:200]
     if src == "device" and dpr:
         # 老协议只有设备像素字段：折算回 CSS（拿不到 dpr 则保持原值并标
         # content_source，收据会显示"单位未折算"）

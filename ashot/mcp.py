@@ -433,7 +433,8 @@ def _cdp_view(port=None, index=0, ws=None, timeout=15):
     tag/id/selector/rect/overflow/scroll_top/scroll_h/client_h）。
     截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
     ws_url = _resolve_ws(port, index, ws)
-    lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15))
+    lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15),
+                          include_scrollables=True)
     rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
            "content_w": lay["content_w"], "content_h": lay["content_h"],
            "dpr": dpr}
@@ -442,10 +443,12 @@ def _cdp_view(port=None, index=0, ws=None, timeout=15):
     if lay["vw"] and lay["vh"] and dpr:
         rec["hint"] = ("截图按 dpr=%s 放大（物理=%sx%s），点击请用 CSS 坐标"
                        % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
-    try:
-        rec["scrollables"] = cdp.scrollables(ws_url)
-    except Exception as e:  # noqa: BLE001 —— 失败亮牌，不静默
-        rec["scrollables_error"] = str(e)[:200]
+    if "scrollables" in lay:
+        rec["scrollables"] = lay["scrollables"]
+        if lay.get("scrollables_truncated"):
+            rec["scrollables_truncated"] = True
+    if lay.get("scrollables_error"):
+        rec["scrollables_error"] = lay["scrollables_error"]
     return json.dumps(rec, ensure_ascii=False)
 
 

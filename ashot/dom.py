@@ -24,6 +24,7 @@ Ashot 不做验证码；这里只回答两个**通用**问题：
 import json
 
 from . import cdp
+from ._ops import ResolvedOp
 
 _RECT_BODY = r"""
   const el = doc.querySelector(%s);
@@ -552,8 +553,7 @@ def apply_selectors(ws, ops, refs=None, timeout=15, space="viewport"):
         else:
             raise ValueError("selector/ref 只支持矩形族与 text；"
                              "%r 请直接用坐标" % (kind,))
-        o["__resolved__"] = True
-        out.append(o)
+        out.append(ResolvedOp(o))
     return out
 
 

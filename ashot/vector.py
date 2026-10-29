@@ -34,7 +34,6 @@ _ALLOWED_KEYS = {
     "n", "style", "dim", "block", "start", "sweep", "end",
     "start_angle", "sweep_angle", "end_angle", "dpr",
     "selector", "ref", "pad",
-    "__resolved__",
 }
 
 
@@ -73,6 +72,9 @@ def apply_pad(ops):
                 raise ValueError("op 字符串必须是对象：%r" % (op,))
         if not isinstance(op, dict):
             raise ValueError("op 需要对象：%r" % (op,))
+        if "dpr" in op and not (op.get("selector") or op.get("ref")):
+            raise ValueError("dpr 只对 selector/ref op 有效；坐标型 op 请用"
+                             "全局 --dpr（v0.6.4）")
         unknown = set(op) - _ALLOWED_KEYS
         if unknown:
             raise ValueError("未知 op 字段 %s（kind=%r）——拼写检查，"
