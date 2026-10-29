@@ -743,8 +743,8 @@ def _cmd_cdp_view(a):
                            % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
         try:
             rec["scrollables"] = cdp.scrollables(ws)
-        except Exception:  # noqa: BLE001 —— 附加信息，失败不拖垮
-            pass
+        except Exception as e:  # noqa: BLE001 —— 失败亮牌，不静默
+            rec["scrollables_error"] = str(e)[:200]
         print(json.dumps(rec, ensure_ascii=False))
         return 0
     except Exception as e:  # noqa: BLE001

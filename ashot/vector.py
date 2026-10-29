@@ -15,6 +15,7 @@ _gdi_render.ps1（System.Drawing 抗锯齿），编排归 annotate_gdi。
 只负责忠实描边**——所以和箭头一样是抗锯齿矢量合成，不是像素画布硬边。
 采样密度依据见 geometry.py 文件头（GDI+ DrawBezier 内部同样展平）。
 """
+import json
 import math
 
 from . import geometry
@@ -30,7 +31,8 @@ _ALLOWED_KEYS = {
     "kind", "x", "y", "w", "h", "x1", "y1", "x2", "y2",
     "x0", "y0", "c1x", "c1y", "c2x", "c2y", "points", "coords", "area",
     "color", "width", "radius", "text", "size", "font", "bold", "value",
-    "n", "style", "dim", "block", "start", "sweep", "dpr",
+    "n", "style", "dim", "block", "start", "sweep", "end",
+    "start_angle", "sweep_angle", "end_angle", "dpr",
     "selector", "ref", "pad",
     "__resolved__",
 }
@@ -62,8 +64,13 @@ def apply_pad(ops):
     out = []
     for op in ops:
         if isinstance(op, str):
-            out.append(op)
-            continue
+            # 字符串 op 也要过 pad/字段校验（v0.6.3 审查：旧实现绕过）
+            try:
+                op = json.loads(op)
+            except ValueError:
+                raise ValueError("op 字符串不是合法 JSON：%r" % (op[:80],))
+            if not isinstance(op, dict):
+                raise ValueError("op 字符串必须是对象：%r" % (op,))
         if not isinstance(op, dict):
             raise ValueError("op 需要对象：%r" % (op,))
         unknown = set(op) - _ALLOWED_KEYS
@@ -79,6 +86,8 @@ def apply_pad(ops):
             raise ValueError("pad 只支持矩形族 %s：kind=%r"
                              % (list(_RECT_PAD_KINDS), op.get("kind")))
         pad = float(pad)
+        if pad < 0:
+            raise ValueError("pad 必须 >= 0（需要缩小请自己改 w/h）：%r" % (pad,))
         x, y, w, h = _box4(op)
         o = dict(op)
         for k in ("area", "coords", "pad"):

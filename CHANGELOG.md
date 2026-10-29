@@ -2,13 +2,42 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.6.3] - 2026-10-29
+
+### 复审修复（v0.6.2 两路子 agent 只读复审）
+- **P1 白名单误杀文档化的 arc 别名**：`end` / `start_angle` /
+  `sweep_angle` / `end_angle` 都在 `geometry.parse_arc` 里被消费，但没进
+  `_ALLOWED_KEYS` → 文档写法直接 ValueError。已补齐，并加 `annotate_png`
+  正向回归（arc+end / arc+start_angle）。
+- **P1 scrollables 语义/字段**：旧判据只看 `scrollHeight>clientHeight`，
+  `overflow:hidden` 的截断块也会被当"可滚"；且无 rect/selector。
+  现在只收 `overflow:auto|scroll|overlay` 且确有溢出的元素，排除
+  documentElement，返回 `selector/rect/overflow_x/overflow_y`，扫描上限
+  3000 节点；求值失败抛错，CLI/MCP 收据写 `scrollables_error`（不再静默）。
+  真机验证：`hidden/visible` 两个溢出块被排除，只有 `auto` 的 `#s` 进列表。
+- **负 pad**：`pad<0` 直接报错（旧实现会把矩形翻成贯穿全屏的线）。
+- **字符串 op**：先 `json.loads` 再走 pad/白名单（旧实现整段绕过校验）。
+- **文档/文案修正**：
+  - `scrollables` 字段统一写 snake_case（`scroll_top/scroll_h/client_h`），
+    旧文档的 camelCase 与收据不符；
+  - "每个 move 带 button" → "**按压后的**每个 move"；
+  - ref 失效时机改为"下一次 snapshot / 导航 / 进程重启后"（旧写"跨调用"
+    与实现相反）；
+  - 补"未知字段白名单是行为收紧"的兼容性说明；MCP `cdp_view` /
+    `annotate` / `cdp_drag` 描述同步。
+
+### 测试
+- **185 项全绿**（新增 5：arc.end 正向、负 pad、字符串 op、scrollables
+  失败抛错、工具描述含新能力）。
+
 ## [0.6.2] - 2026-10-29
 
 ### 修复（另一窗口 v0.6.x 实弹测试反馈）
 - **原生 `<input type=range>` 拖不动**：CDP 的 mouseMoved 缺 `button`
-  字段（默认 none），原生 range 只认按下状态的 move。现在拖拽的每个
-  move 都带 `button=left`（human 与直线两条路径都修）；实测从 value=8
-  拖到 82（改前停在 9）。自定义 div 滑块不受影响。
+  字段（默认 none），原生 range 只认按下状态的 move。现在**按压后的**
+  每个 move 都带 `button=left`（human 与直线两条路径都修；按下前的
+  hover 帧无按键，语义正确）；实测从 value=8 拖到 82（改前停在 9）。
+  自定义 div 滑块不受影响。
 - **`pad` 只对 selector 生效、坐标型被静默吞**：`pad` 提到公共入口
   （`vector.apply_pad`），矩形族坐标型/selector 型都外扩；非矩形族用
   pad 直接报错。
@@ -21,7 +50,8 @@
 ### 文档/语义澄清
 - `selector`/`ref` 已按页面 dpr 换算；显式 `dpr` 是**覆盖**不是叠乘
   （v0.6.1 起跳过二次乘）。
-- `ref` 来自最近一次 snapshot，跨调用/导航会失效；日常优先 selector。
+- `ref` 来自最近一次 snapshot，**下一次 snapshot / 导航 / 进程重启**
+  后失效（跨调用仍可用）；日常优先 selector。
 - `pad` 现在坐标型也生效（此前只对 selector）。
 
 ### 测试

@@ -48,6 +48,11 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （**度**，顺时针，y 向下；sweep 负=逆时针，>360 夹到一圈；
   也可用 end 代替 sweep）/ `polyline` points=[[x,y],...] 或
   coords="x1,y1,x2,y2,..."。三者都进 `bounds_warn`。
+  **ops 字段白名单**：x/y/w/h/x1..、color/width、radius、text/size/font/
+  bold/w、value/n、style、dim、block、start/sweep/end（及 `*_angle`）、
+  points/coords/area、selector/ref/dpr、pad；白名单外字段（`colour`/
+  `widht`）直接报错。`pad` 对矩形族向外扩，坐标型与 selector 型都生效，
+  **pad<0 报错**。
   **每个 op 独立** `color:"#RRGGBB"` 与 `width`（粗细）——所有描边
   原语（rect/ellipse/line/curve/arc/polyline/arrow）都支持，可给小数
   （2.5），`<=0` 或 `>1000` 报错；矢量路与像素降级路按四舍五入对齐；`arrow` 缺省=
@@ -159,7 +164,8 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
 - `snapshot`——页面结构快照：`[ref=eN] [box=x,y,w,h]`（视口 CSS），
   refs 映射回 CSS 选择器（v0.6.0；比看截图猜坐标准）。selector/ref 已含
   页面 dpr，**别再传全局 dpr**；ref 只对最近一次 snapshot 有效。
-- `cdp-view` 的 `scrollables`：内部滚动容器（scrollTop/scrollHeight）；
+- `cdp-view` 的 `scrollables`：内部滚动容器（`scroll_top/scroll_h/client_h`
+  + `selector/rect/overflow_*`；只收 overflow:auto|scroll|overlay）；
   `content_h` 只反映 document，别拿它判断能否滚动。
 - `frames`——frame 树（id/url/parent/depth）+ 能取到的 iframe 矩形。
 - `frame-element <iframe选择器|JSON数组> <选择器>`——iframe 内元素 →

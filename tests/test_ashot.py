@@ -2885,7 +2885,7 @@ def test_apply_selectors_ref_without_cache():
     import pytest as _pytest
     with _pytest.raises(ValueError) as ei:
         dom.apply_selectors("ws", [{"kind": "rect", "ref": "e1"}])
-    assert "仅 MCP" in str(ei.value)
+    assert "没有快照缓存" in str(ei.value) or "CLI 不支持 ref" in str(ei.value)
 
 
 def test_snapshot_truncated_flag(monkeypatch):
@@ -2965,3 +2965,58 @@ def test_scrollables_stub(monkeypatch):
                         lambda *a, **k: {"result": {"value": payload}})
     rec = cdp_mod.scrollables("ws://x")
     assert rec[0]["scroll_h"] == 1000
+
+
+def test_arc_end_alias_passes_whitelist():
+    """文档化写法 arc.end（及 *_angle 别名）不能被白名单误杀。"""
+    png = _solid(120, 120)
+    for op in ({"kind": "arc", "x": 10, "y": 10, "w": 80, "h": 80,
+                "start": 0, "end": 90, "width": 2, "color": "#FF0000"},
+               {"kind": "arc", "x": 10, "y": 10, "w": 80, "h": 80,
+                "start_angle": 0, "end_angle": 90, "width": 2,
+                "color": "#FF0000"}):
+        out = annotate.annotate_png(png, [op])
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_negative_pad_rejected():
+    import pytest as _pytest
+    png = _solid(50, 30)
+    with _pytest.raises(ValueError) as ei:
+        annotate.annotate_png(png, [{"kind": "rect", "x": 5, "y": 5,
+                                     "w": 10, "h": 10, "pad": -2}])
+    assert "pad 必须" in str(ei.value)
+
+
+def test_string_op_pad_and_validation():
+    """字符串 op 也要过 pad/字段校验（旧实现直接绕过）。"""
+    png = _solid(100, 60)
+    out = annotate.annotate_png(
+        png, ['{"kind":"rect","x":20,"y":10,"w":20,"h":10,"pad":5,'
+              '"width":2,"color":"#FF0000"}'])
+    assert out[:8] == b"\x89PNG\r\n\x1a\n"
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        annotate.annotate_png(
+            png, ['{"kind":"rect","x":1,"y":1,"w":5,"h":5,"colour":"#f00"}'])
+
+
+def test_scrollables_raises_on_eval_error(monkeypatch):
+    from ashot import cdp as cdp_mod
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"exceptionDetails":
+                                         {"text": "boom"}})
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError) as ei:
+        cdp_mod.scrollables("ws://x")
+    assert "scrollables" in str(ei.value)
+
+
+def test_tool_descriptions_v063():
+    from ashot import mcp as mcp_mod
+    view = mcp_mod.TOOLS["ashot_cdp_view"]["description"]
+    assert "scrollables" in view
+    ann = mcp_mod.TOOLS["ashot_annotate"]["description"]
+    assert "pad" in ann and "白名单" in ann
+    drag = mcp_mod.TOOLS["ashot_cdp_drag"]["description"]
+    assert "range" in drag

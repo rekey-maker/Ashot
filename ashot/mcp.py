@@ -184,6 +184,8 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     **v0.5.0**：image 支持 PNG/JPEG；**dpr>0 时 ops 坐标按 CSS→物理
     像素缩放（只缩放坐标，字号/线宽不变，缺省 0=不换算）**；text 的
     `w`（布局宽）也会被缩放，换行位置可能变。
+    **v0.6.2**：`pad` 对**坐标型与 selector 型**的矩形族都生效（向外扩，
+    负值报错）；op 字段走白名单，拼错（colour/widht）直接 ValueError。
     **v0.6.0/0.6.1**：ops 可用 `selector` 或 `ref`（ref 来自
     `ashot_snapshot`）直接按元素定位，矩形族与 text 支持，`pad` 外扩；
     selector/ref 已含页面 dpr，**不要再传全局 dpr**（会二次乘，v0.6.1
@@ -426,7 +428,9 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
 
 def _cdp_view(port=None, index=0, ws=None, timeout=15):
     """CDP 标签页视口信息（v0.2.5）：vw/vh = CSS 像素视口尺寸，
-    dpr = devicePixelRatio，content_w/h = 整页内容尺寸。
+    dpr = devicePixelRatio，content_w/h = **document** 内容尺寸
+    （不代表内部滚动容器；v0.6.2 起 `scrollables` 列出真正可滚的容器：
+    tag/id/selector/rect/overflow/scroll_top/scroll_h/client_h）。
     截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
     ws_url = _resolve_ws(port, index, ws)
     lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15))
@@ -440,8 +444,8 @@ def _cdp_view(port=None, index=0, ws=None, timeout=15):
                        % (dpr, int(lay["vw"] * dpr), int(lay["vh"] * dpr)))
     try:
         rec["scrollables"] = cdp.scrollables(ws_url)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001 —— 失败亮牌，不静默
+        rec["scrollables_error"] = str(e)[:200]
     return json.dumps(rec, ensure_ascii=False)
 
 
@@ -581,7 +585,8 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
               total_ms=None, constrained=True, max_perp=2.5,
               timing=True, verify=""):
     """CDP 鼠标拖拽（v0.2.4/0.2.5）：按下 → 节奏化移动 → 末端过冲回退
-    → 松手。
+    → 松手。**v0.6.2：原生 `<input type=range>` 可拖**（按压后的 move 带
+    button=left，实测 value 8→82；自定义 div 滑块不受影响）。
 
     pace=节奏档（**速度可调，用户 2026-10-28 要求**）：
       · normal（缺省）≈ 260 + dist×1.1 ms，夹在 320~1400ms

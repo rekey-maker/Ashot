@@ -1217,16 +1217,44 @@ def _restore_fixed(ws, timeout=10):
 _SCROLLABLES_JS = r"""
 (() => {
   const out = [];
-  for (const e of document.querySelectorAll("*")) {
-    if (e.scrollHeight > e.clientHeight + 4 || e.scrollWidth > e.clientWidth + 4) {
-      out.push({tag: e.tagName.toLowerCase(), id: e.id || "",
-                cls: (typeof e.className === "string" ? e.className : "").slice(0, 60),
-                scroll_top: Math.round(e.scrollTop),
-                scroll_left: Math.round(e.scrollLeft),
-                scroll_h: e.scrollHeight, client_h: e.clientHeight,
-                scroll_w: e.scrollWidth, client_w: e.clientWidth});
-      if (out.length >= 8) break;
+  let scanned = 0;
+  const path = el => {
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      let sel = cur.tagName.toLowerCase();
+      const par = cur.parentElement;
+      if (par) {
+        const same = [...par.children].filter(c => c.tagName === cur.tagName);
+        sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+      }
+      parts.unshift(sel);
+      if (cur === document.body) break;
+      cur = par;
     }
+    return parts.join(" > ");
+  };
+  for (const e of document.querySelectorAll("*")) {
+    if (++scanned > 3000) break;
+    if (e === document.documentElement) continue;
+    const cs = getComputedStyle(e);
+    const oy = cs.overflowY, ox = cs.overflowX;
+    const canY = /(auto|scroll|overlay)/.test(oy)
+                 && e.scrollHeight > e.clientHeight + 4;
+    const canX = /(auto|scroll|overlay)/.test(ox)
+                 && e.scrollWidth > e.clientWidth + 4;
+    if (!canY && !canX) continue;
+    const r = e.getBoundingClientRect();
+    out.push({tag: e.tagName.toLowerCase(), id: e.id || "",
+              cls: (typeof e.className === "string" ? e.className : "").slice(0, 60),
+              selector: path(e), overflow_x: ox, overflow_y: oy,
+              scroll_top: Math.round(e.scrollTop),
+              scroll_left: Math.round(e.scrollLeft),
+              scroll_h: e.scrollHeight, client_h: e.clientHeight,
+              scroll_w: e.scrollWidth, client_w: e.clientWidth,
+              rect: [Math.round(r.left), Math.round(r.top),
+                     Math.round(r.width), Math.round(r.height)]});
+    if (out.length >= 8) break;
   }
   return out;
 })()
@@ -1234,13 +1262,17 @@ _SCROLLABLES_JS = r"""
 
 
 def scrollables(ws, timeout=10):
-    """页面里真正能滚的容器（v0.6.2）：window.scrollY 只反映 document，
-    内部滚动容器（如抖音整页 div）要用 scrollTop。返回前 8 个
-    {tag,id,cls,scroll_top,scroll_left,scroll_h,client_h,scroll_w,client_w}。"""
+    """页面里真正能滚的容器（v0.6.2）：只收 `overflow:auto|scroll|overlay`
+    且确有溢出的元素（v0.6.3 加），排除 documentElement；返回
+    {tag,id,cls,selector,overflow_x,overflow_y,scroll_top,scroll_left,
+     scroll_h,client_h,scroll_w,client_w,rect}。
+    `window.scrollY`/`content_h` 只反映 document——内部容器要看这里。
+    求值失败抛 RuntimeError（调用方写 scrollables_error，不静默）。"""
     res = call(ws, "Runtime.evaluate",
                {"expression": _SCROLLABLES_JS, "returnByValue": True}, timeout)
-    if res.get("exceptionDetails"):
-        return []
+    exc = res.get("exceptionDetails")
+    if exc:
+        raise RuntimeError("scrollables 求值失败：%s" % (str(exc)[:200],))
     return (res.get("result") or {}).get("value") or []
 
 

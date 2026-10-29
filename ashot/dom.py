@@ -519,8 +519,8 @@ def apply_selectors(ws, ops, refs=None, timeout=15, space="viewport"):
         if ref:
             if refs is None:
                 raise ValueError(
-                    "ref 仅 MCP 同连接可用（CLI 无快照缓存）；"
-                    "CLI 请用 selector 或坐标，或改用 MCP")
+                    "本进程没有快照缓存：请先 snapshot（MCP 同连接）；"
+                    "CLI 不支持 ref，请用 selector 或坐标")
             info = (refs or {}).get(str(ref))
             if not info:
                 raise ValueError("ref 已过期或不存在（请重新 snapshot）：%r"
