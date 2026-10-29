@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.1**，MCP 22 个工具。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.4.2**，MCP 22 个工具，**MIT 开源**。
 
 ## 安装与要求
 
@@ -195,6 +195,10 @@ ashot/
 └── tests/test_transform.py     # 30 项（v0.4.0 裁切/缩放/JPEG）
 ├── tests/test_shapes.py      # 12 项（v0.4.1 曲线/弧线/折线）
 ```
+
+## 许可证
+
+[MIT](LICENSE) © 2026 rekey-maker —— 可自由使用、修改、分发、商用，保留版权声明即可。
 
 ## 版本与文档
 
