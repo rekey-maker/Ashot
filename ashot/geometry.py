@@ -81,7 +81,7 @@ def polyline_points(points):
     for p in points:
         if len(p) != 2:
             raise ValueError("polyline 每个点要 [x, y]：%r" % (p,))
-        xy = (float(p[0]), float(p[1]))
+        xy = (_finite(p[0]), _finite(p[1]))
         if not pts or abs(pts[-1][0] - xy[0]) > 1e-9 \
                 or abs(pts[-1][1] - xy[1]) > 1e-9:
             pts.append(xy)
@@ -99,8 +99,17 @@ def pad_points(pts):
 
 # ---------- op 解析（矢量路与像素路共用同一套 schema 解析） ----------
 
+def _finite(v, what="坐标"):
+    """转 float 并拒绝 NaN/inf：非有限值会一路传进 PS 变成"画不出也不报错"。"""
+    f = float(v)
+    if not math.isfinite(f):
+        raise ValueError("%s 必须是有限数：%r" % (what, v))
+    return f
+
+
 def _float_list(text, n=None, even=False):
-    parts = [float(x) for x in str(text).replace(" ", ",").split(",") if x.strip()]
+    parts = [_finite(x) for x in str(text).replace(" ", ",").split(",")
+             if x.strip()]
     if n is not None and len(parts) != n:
         raise ValueError("期望 %d 个数字，got %d：%r" % (n, len(parts), text))
     if even and (len(parts) < 4 or len(parts) % 2):
@@ -122,7 +131,7 @@ def parse_curve(op):
         for p in pts:
             if len(p) != 2:
                 raise ValueError("curve 的 points 每项要 [x, y]：%r" % (p,))
-            flat.extend((float(p[0]), float(p[1])))
+            flat.extend((_finite(p[0]), _finite(p[1])))
         return tuple(flat)
     keys = ("x0", "y0", "c1x", "c1y", "c2x", "c2y", "x1", "y1")
     vals = [op.get(k) for k in keys]
@@ -133,7 +142,7 @@ def parse_curve(op):
         raise ValueError("curve 需要 %s（8 个数字），或 points=[[x,y]×4]，"
                          "或 coords=\"x0,y0,c1x,c1y,c2x,c2y,x1,y1\"：%r"
                          % ("/".join(keys), op))
-    return tuple(float(v) for v in vals)
+    return tuple(_finite(v) for v in vals)
 
 
 def parse_arc(op):
@@ -141,15 +150,16 @@ def parse_arc(op):
     vals = [op.get(k) for k in ("x", "y", "w", "h")]
     if any(v is None for v in vals):
         raise ValueError("arc 需要外接矩形 x,y,w,h：%r" % (op,))
-    x, y, w, h = (float(v) for v in vals)
-    start = float(op.get("start", op.get("start_angle", 0)) or 0)
+    x, y, w, h = (_finite(v) for v in vals)
+    start = _finite(op.get("start", op.get("start_angle", 0)) or 0,
+                    "start")
     sweep = op.get("sweep", op.get("sweep_angle"))
     if sweep is None:
         end = op.get("end", op.get("end_angle"))
         if end is None:
             raise ValueError("arc 需要 sweep（度）或 end（度）：%r" % (op,))
-        sweep = float(end) - start
-    return x, y, w, h, start, float(sweep)
+        sweep = _finite(end, "end") - start
+    return x, y, w, h, start, _finite(sweep, "sweep")
 
 
 def parse_polyline(op):

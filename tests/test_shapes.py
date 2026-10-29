@@ -86,6 +86,18 @@ def test_parse_curve_forms():
         geometry.parse_curve({"x0": 1})
 
 
+def test_non_finite_rejected():
+    """NaN/inf 不能让 PS 静默画不出：解析阶段就报错。"""
+    for bad in ("nan", "inf", "-inf"):
+        with pytest.raises(ValueError):
+            geometry.parse_curve({"coords": "0,0,%s,0,0,0,1,1" % bad})
+    with pytest.raises(ValueError):
+        geometry.parse_arc({"x": 0, "y": 0, "w": 10, "h": 10,
+                            "sweep": float("nan")})
+    with pytest.raises(ValueError):
+        geometry.polyline_points([[0, 0], [float("inf"), 1]])
+
+
 def test_parse_arc_and_polyline_forms():
     assert geometry.parse_arc({"x": 0, "y": 0, "w": 10, "h": 10,
                                "start": 30, "sweep": 120}) == \
