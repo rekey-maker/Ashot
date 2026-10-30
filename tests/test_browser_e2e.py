@@ -193,9 +193,12 @@ def test_background_tab_shot_activates(browser):
     wa, ta = _page(browser, "<body style='margin:0;background:#eee'>A</body>")
     wb, tb = _page(browser, "<body style='margin:0'><h1 id='t'>B1</h1></body>")
     try:
+        # B 最后创建，先拍一张“前台参考图”锁住 B1
+        ref1, _ = cdp.shot(browser["port"], ws=wb, fullpage=False)
         cdp.call(browser["ws"], "Target.activateTarget", {"targetId": ta}, 5)
         time.sleep(0.3)
         png1, info = cdp.shot(browser["port"], ws=wb, fullpage=False)
+        assert png1 == ref1, "后台页截图与前台参考图不一致（旧帧）"
         assert info.get("activated") is True, info
         assert info.get("page_visibility") == "hidden", info
         cdp.call(wb, "Runtime.evaluate",
@@ -213,14 +216,24 @@ def test_snapshot_root_scope(browser):
     """root 限定子树 + 预算按 ref 计：卡片列表不再被外壳吃光。"""
     cards = "".join("<a class='card' href='#%d'>card-%d</a>" % (i, i)
                     for i in range(12))
-    html = ("<body style='margin:0'><div id='shell'><div><div><div>"
-            "<div id='results'>" + cards + "</div></div></div></div></div>"
-            "</body>")
+    outside = "".join("<a class='out' href='#o%d'>out-%d</a>" % (i, i)
+                      for i in range(30))
+    html = ("<body style='margin:0'><div id='shell'>" + outside
+            + "<div><div><div><div id='results'>" + cards
+            + "</div></div></div></div></div></body>")
     ws, tid = _page(browser, html)
     try:
         rec = dom.snapshot(ws, max_nodes=20, root="#results")
-        assert rec["count"] >= 12, rec["count"]
+        assert rec["count"] == 12, rec["count"]
         assert not rec["truncated"], rec.get("truncated_at")
+        assert all("out-" not in (v["text"] or "")
+                   for v in rec["refs"].values()), "root 外的元素混进来了"
+        # 负控：不给 root 时，30 个外层链接 + 12 卡片必然超预算
+        rec_all = dom.snapshot(ws, max_nodes=20)
+        assert rec_all["truncated"] is True
+        # 恰好打满预算不算截断
+        exact = dom.snapshot(ws, max_nodes=12, root="#results")
+        assert exact["count"] == 12 and exact["truncated"] is False
         import pytest as _pytest
         with _pytest.raises(RuntimeError):
             dom.snapshot(ws, root="#nope")

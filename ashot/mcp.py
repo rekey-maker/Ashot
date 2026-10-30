@@ -402,7 +402,10 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
     截图 PNG 路径；收据含 dpr、**to_css**（截图像素 × to_css = 点击用的
     CSS 坐标）与 coord_space（viewport/document——全页截图是文档坐标，
     点首屏以下要先减 scrollY，v0.2.6 Q06）。preview 缺省 true（Q16）。
-    本工具需宿主重连后才会出现在工具表。"""
+    本工具需宿主重连后才会出现在工具表。
+    **v0.7.0**：hidden 标签页自动 `Page.bringToFront`（activate=false 拒绝）；
+    `url_sub` 按 URL 子串选页；收据带 `page_visibility`/`activated`/
+    `frame_stale_risk`。"""
     ws_url = _resolve_ws(port, index, url_sub=url_sub)
     png, info = cdp.shot(None, ws=ws_url,
                          fullpage=as_bool(fullpage, True),
@@ -430,7 +433,7 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
 
 def _cdp_view(port=None, index=0, ws=None, timeout=15, url_sub=None):
     """CDP 标签页视口信息（v0.2.5）：vw/vh = CSS 像素视口尺寸，
-    dpr = devicePixelRatio，content_w/h = **document** 内容尺寸
+    dpr = devicePixelRatio；`url_sub` 可按 URL 选页；content_w/h = **document** 内容尺寸
     （不代表内部滚动容器；v0.6.2 起 `scrollables` 列出真正可滚的容器：
     tag/id/selector/rect/overflow/scroll_top/scroll_h/client_h）。
     截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
@@ -458,7 +461,7 @@ def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
               timeout=30, url_sub=None):
     """在 CDP 标签页里跑一段 JS 并取值（v0.2.5）。js 可写函数体（内部
     return）或表达式。用途：算坐标、读页面状态确认操作生效、拿 dpr。
-    **只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点，
+    `url_sub` 可按 URL 选页。**只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点，
     一发即杀实例）。收据 {ok, value, value_type, exception}——异常如实
     带出不静默；value_type 区分 null / undefined / 不可序列化对象
     （v0.2.6 Q14：三者旧收据同形 None）。"""
@@ -504,7 +507,13 @@ def _resolve_ws(port, index=0, ws=None, allow_multi=False, url_sub=None):
     info.update({k: v for k, v in cdp.target_info(p, index).items()
                  if k != "port"})
     _LAST_TARGET.update(info)   # 就地更新（与 _serve 的 clear 同一对象）
-    return cdp.ws_for(p, index=int(index or 0), url_sub=url_sub)
+    ws_url = cdp.ws_for(p, index=int(index or 0), url_sub=url_sub)
+    if url_sub:
+        try:
+            _LAST_TARGET.update(cdp.target_for_ws(p, ws_url))
+        except Exception:  # noqa: BLE001 —— 盖章是附加项
+            pass
+    return ws_url
 
 
 _LAST_REFS = {}   # 最近一次 snapshot 的 {ws, refs}（stdio 单线程，够用）
@@ -516,7 +525,8 @@ def _snapshot(port=None, index=0, ws=None, max_nodes=150, root=None,
     矩形），Playwright MCP 同思路——**用结构化元素代替像素猜坐标**。
     收据 {ok, tree, refs, count, truncated, truncated_at, url, title,
     dpr, scroll}；`root` 可把扫描限定到子树（如 "#search-content"），
-    `max_nodes` 只限制 **ref 数**（结构节点另有 4× 上限）；ref 可用于
+    `max_nodes` 只限制 **ref 数**（结构节点另有 4× 上限）；`url_sub`
+    可按 URL 选页；ref 可用于
     `ashot_annotate` 的 ops（`{"kind":"rect","ref":"e5"}`）与 selector。"""
     ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     rec = dom.snapshot(ws_url, max_nodes=int(max_nodes or 150),
@@ -565,7 +575,9 @@ def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
     不再恒从屏幕左上角出发——那是稳定指纹）。
     verify=一段 JS（可选）：点完立刻求值，结果进收据 verify 字段——
     **dispatched 只说明事件发出去了，不说明生效**（v0.2.5 诚实化）。
-    返回 {ok, dispatched}。需宿主重连出现。"""
+    返回 {ok, dispatched, ...}。**v0.7.0**：`activate`（hidden 自动前台化）、
+    `url_sub`；收据带 `planned_ms`/`dispatch_ms`/`per_event_ms`，
+    单事件 >2s 标 `slow_ack`。需宿主重连出现。"""
     ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     vis = cdp.page_visibility(ws_url)
     activated = False
@@ -626,7 +638,10 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
     human=false = 直线插值（旧行为，最像机器，仅供对照）。
     verify=一段 JS（可选）：拖完立刻求值，结果进收据——用来确认真的拖到了。
 
-    返回 {ok, dispatched, seconds, pace, constrained}。需宿主重连出现。"""
+    返回 {ok, dispatched, seconds, pace, constrained, ...}。**v0.7.0**：
+    `activate`/`url_sub`；收据带 `dispatch_ms`/`per_event_ms`，
+    单事件 >2s 标 `slow_ack`；只有真被 3s 夹断才给 `clipped_ms`/hint。
+    需宿主重连出现。"""
     ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     vis = cdp.page_visibility(ws_url)
     activated = False
@@ -653,7 +668,8 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
            "timing": as_bool(timing, True),
            "constrained": as_bool(constrained, True),
            "max_perp": float(max_perp or 2.5)}
-    for k in ("planned_ms", "slept_ms", "dispatch_ms", "max_event_ms"):
+    for k in ("planned_ms", "slept_ms", "clipped_ms", "dispatch_ms",
+              "max_event_ms"):
         if k in stats:
             rec[k] = stats[k]
     if n:
@@ -664,7 +680,9 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
         rec["activated"] = True
     if vis:
         rec["page_visibility"] = vis
-        rec["hint"] = "等待被 3s 上限夹断，实际节奏比请求慢档短"
+    if stats.get("clipped_ms"):
+        rec["hint"] = ("等待被 3s 上限夹断 %.1fms，实际节奏比请求短"
+                       % stats["clipped_ms"])
     if verify:
         try:
             r = cdp.evaluate(ws_url, verify)
@@ -678,7 +696,8 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
 
 
 def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
-                  port=None, index=0, ws=None, from_x=None, from_y=None):
+                  port=None, index=0, ws=None, from_x=None, from_y=None,
+                  activate=True, url_sub=None):
     """CDP 双击/多击（v0.2.3/0.2.4）：clickCount 递增序列，浏览器据此
     合成 dblclick 事件；human=True（缺省）先人类化轨迹到位。x/y=CSS
     像素；from_x/from_y 可选起点（v0.2.6 Q12）。返回 {ok, dispatched}。
@@ -696,8 +715,21 @@ def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
                               seed=int(seed) if seed not in (None,
                                                              "") else None,
                               start=start)
-    n, _ = cdp.dispatch(ws_url, seq)
-    return json.dumps({"ok": True, "dispatched": n}, ensure_ascii=False)
+    stats = {}
+    n, _ = cdp.dispatch(ws_url, seq, stats=stats)
+    rec = {"ok": True, "dispatched": n}
+    for k in ("planned_ms", "slept_ms", "dispatch_ms", "max_event_ms"):
+        if k in stats:
+            rec[k] = stats[k]
+    if n:
+        rec["per_event_ms"] = round(stats.get("dispatch_ms", 0) / n, 1)
+    if stats.get("max_event_ms", 0) > 2000:
+        rec["slow_ack"] = True
+    if activated:
+        rec["activated"] = True
+    if vis:
+        rec["page_visibility"] = vis
+    return json.dumps(rec, ensure_ascii=False)
 
 
 def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,

@@ -359,7 +359,7 @@ _SNAPSHOT_JS = r"""
   const ROOT_SEL = %s;
   const MAXD = 12;
   const refs = {};
-  let emitted = 0, n = 0, truncated = false, lastSel = null;
+  let emitted = 0, n = 0, truncated = false, lastSel = null, stopDepth = 0;
   const clean = s => (s || "").trim().replace(/\s+/g, " ").slice(0, 80);
   const vis = el => {
     const r = el.getBoundingClientRect();
@@ -414,12 +414,16 @@ _SNAPSHOT_JS = r"""
     return parts.join(" > ");
   };
   const walk = (el, depth) => {
-    if (depth > MAXD) { truncated = true; return null; }
-    if (emitted >= MAX_NODES || n >= MAX_REFS) { truncated = true; return null; }
+    if (depth > MAXD) { truncated = true; stopDepth = depth; return null; }
+    if (emitted >= MAX_NODES || n >= MAX_REFS) {
+      truncated = true; stopDepth = depth; return null;
+    }
     emitted += 1;
     const kids = [];
     for (const c of el.children) {
-      if (emitted >= MAX_NODES || n >= MAX_REFS) { truncated = true; break; }
+      if (emitted >= MAX_NODES || n >= MAX_REFS) {
+        truncated = true; stopDepth = depth + 1; break;
+      }
       const k = walk(c, depth + 1);
       if (k) kids.push(k);
     }
@@ -437,7 +441,6 @@ _SNAPSHOT_JS = r"""
       lastSel = sel;
       refs[ref] = {selector: sel, tag: el.tagName.toLowerCase(),
                    text: name, rect: node.box};
-      if (n >= MAX_REFS) truncated = true;
     }
     if (!node.ref && !kids.length) return null;
     return node;
@@ -450,7 +453,8 @@ _SNAPSHOT_JS = r"""
   const root = walk(start, 0);
   return {tree: root, refs: refs, count: n, truncated: truncated,
           truncated_at: truncated ? {refs: n, nodes: emitted,
-                                     depth: MAXD, last_selector: lastSel} : null,
+                                     depth: stopDepth,
+                                     last_selector: lastSel} : null,
           url: location.href, title: document.title,
           dpr: window.devicePixelRatio,
           scroll: [window.scrollX, window.scrollY]};
@@ -505,6 +509,8 @@ def snapshot(ws, max_nodes=150, timeout=15, root=None):
     if len(tree) > 200000:          # 极端页面兜底：别把上下文撑爆
         tree = tree[:200000] + "\n…（截断）"
         truncated = True
+        if not out.get("truncated_at"):
+            out["truncated_at"] = {"reason": "text_cap", "chars": 200000}
     return {"tree": tree, "refs": out.get("refs") or {},
             "count": int(out.get("count") or 0),
             "truncated": truncated,

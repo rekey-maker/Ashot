@@ -445,7 +445,8 @@ def test_mcp_tool_schemas():
                                 "url_sub"}),
             ("ashot_cdp_dblclick", {"x", "y", "button", "count", "human",
                                     "seed", "port", "index", "ws",
-                                    "from_x", "from_y"})):
+                                    "from_x", "from_y", "activate",
+                                    "url_sub"})):
         assert set(mcp_mod.TOOLS[nm]["inputSchema"]["properties"]) == props, nm
     sc = mcp_mod.TOOLS["ashot_annotate"]["inputSchema"]
     assert sc["required"] == ["image", "ops"]
@@ -501,7 +502,8 @@ def test_mcp_tool_schemas():
     assert db["required"] == ["x", "y"]
     assert set(db["properties"]) == {"x", "y", "button", "count", "human",
                                      "seed", "port", "index", "ws",
-                                     "from_x", "from_y"}
+                                     "from_x", "from_y", "activate",
+                                     "url_sub"}
     assert db["properties"]["from_x"]["type"] == "integer", \
         "坐标参数默认 None 也应按语义声明 integer（v0.2.6 审计）"
     assert mcp_mod.TOOLS["ashot_cdp_click"]["inputSchema"]["properties"][
@@ -3022,6 +3024,10 @@ def test_tool_descriptions_v063():
     assert "pad" in ann and "白名单" in ann
     drag = mcp_mod.TOOLS["ashot_cdp_drag"]["description"]
     assert "range" in drag
+    shot_d = mcp_mod.TOOLS["ashot_cdp_shot"]["description"]
+    assert "activate" in shot_d and "url_sub" in shot_d
+    click_d = mcp_mod.TOOLS["ashot_cdp_click"]["description"]
+    assert "slow_ack" in click_d and "per_event_ms" in click_d
 
 
 def test_ws_for_url_sub(monkeypatch):
@@ -3077,3 +3083,46 @@ def test_snapshot_truncated_at(monkeypatch):
     rec = dom.snapshot("ws://x")
     assert rec["truncated_at"]["nodes"] == 12
     assert rec["truncated_at"]["last_selector"] == "body > div"
+
+
+def test_cdp_dblclick_handler_v071(monkeypatch):
+    """P0 回归：dblclick 签名缺 activate/url_sub 会 NameError。"""
+    from ashot import cdp as cdp_mod
+    from ashot import mcp as mcp_mod
+    import json as _json
+    monkeypatch.setattr(mcp_mod, "_resolve_ws", lambda *a, **k: "ws")
+    monkeypatch.setattr(cdp_mod, "page_visibility", lambda ws: "visible")
+    monkeypatch.setattr(cdp_mod, "dispatch", lambda *a, **k: (3, []))
+    rec = _json.loads(mcp_mod._cdp_dblclick(1, 1))
+    assert rec["ok"] and rec["dispatched"] == 3
+
+
+def test_drag_hint_only_when_clipped(monkeypatch):
+    """drag 收据：clipped_ms=0 不得有「被夹断」hint；真夹断才给。"""
+    from ashot import cdp as cdp_mod
+    from ashot import mcp as mcp_mod
+    import json as _json
+    monkeypatch.setattr(mcp_mod, "_resolve_ws", lambda *a, **k: "ws")
+    monkeypatch.setattr(cdp_mod, "page_visibility", lambda ws: "visible")
+    monkeypatch.setattr(cdp_mod, "drag_events",
+                        lambda *a, **k: [{"type": "mouseMoved"}])
+
+    def fake_dispatch(ws, seq, realtime=True, stats=None):
+        stats["clipped_ms"] = 0.0
+        stats["dispatch_ms"] = 10.0
+        stats["max_event_ms"] = 5.0
+        return 1, []
+
+    monkeypatch.setattr(cdp_mod, "dispatch", fake_dispatch)
+    rec = _json.loads(mcp_mod._cdp_drag(0, 0, 10, 0))
+    assert "hint" not in rec and rec["clipped_ms"] == 0.0
+
+    def slow_dispatch(ws, seq, realtime=True, stats=None):
+        stats["clipped_ms"] = 500.0
+        stats["dispatch_ms"] = 5000.0
+        stats["max_event_ms"] = 4500.0
+        return 1, []
+
+    monkeypatch.setattr(cdp_mod, "dispatch", slow_dispatch)
+    rec = _json.loads(mcp_mod._cdp_drag(0, 0, 10, 0))
+    assert "hint" in rec and rec["slow_ack"] is True

@@ -2,6 +2,33 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.1] - 2026-10-30
+
+### 复审修复（v0.7.0 两路子 agent 只读复审）
+- **P0 `ashot_cdp_dblclick` 必抛 NameError**：函数签名缺 `activate`/`url_sub`，
+  函数体却引用；补签名 + 激活 + 计时收据，并加 handler 级回归。
+- **P0 drag 收据恒谎报「被 3s 夹断」**：`hint` 缩进错进 `if vis`，且
+  `clipped_ms` 从收据消失；已挪回 `clipped_ms>0` 条件、恢复 `clipped_ms`。
+- **P1 snapshot 打满预算误报 truncated**：去掉「发完第 N 个 ref 就 truncate」；
+  `truncated_at.depth` 改为真实停止深度；200k 字符兜底时补 `truncated_at`。
+- **P1 url_sub 选页后 target 盖章错页**：新增 `cdp.target_for_ws`，`_LAST_TARGET`
+  与 CLI `target:` 行按实际 ws 取页签。
+- **P1 CLI cdp-shot 缺 --url-sub**：补上；文档改为「cdp-* 操作命令支持，
+  cdp-tabs 列页签除外」。
+- **P1 后台页 E2E 假绿**：先拍「前台参考图」，激活后台页后首张必须与参考
+  逐字节相同；snapshot root 测试加负控（无 root 必截断、root 外元素不得混入、
+  恰好打满预算不算截断）。
+- **P1 描述缺失**：MCP shot/click/drag/view/eval/snapshot 描述补
+  activate/url_sub/收据字段口径。
+- **P2 dispatch 异常丢统计**：统计改为 `finally` 写出（ACK 超时也能拿到
+  部分数据），计时改 `time.monotonic()`；stitch 兜底补
+  `page_visibility/activated`。
+- 文档：`--no-activate` 对 click/drag 是「静默继续」而非报错，已写明；
+  自动前台化会切走浏览器 active tab 的副作用已警告。
+
+### 测试
+- 常规 **190 passed, 6 skipped**；`ASHOT_E2E=1` 时 **6 passed**。
+
 ## [0.7.0] - 2026-10-30
 
 ### 修复（另一窗口抖音实弹反馈）
@@ -19,7 +46,7 @@
   `truncated_at: {refs, nodes, depth, last_selector}`。卡片列表不再
   被导航/侧栏挤掉。
 - **tab index 会因新开页位移**：新增 `url_sub`（按 URL 子串选页），
-  CLI 全部 cdp-* 支持 `--url-sub`，MCP 的 shot/click/drag/eval/snapshot/
+  CLI 的 cdp-* 操作命令支持 `--url-sub`（cdp-tabs 列页签除外），MCP 的 shot/click/drag/eval/snapshot/
   view 支持同参数。
 
 ### 测试

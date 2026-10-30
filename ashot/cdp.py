@@ -991,42 +991,57 @@ def dispatch(ws_url, events, timeout=30, realtime=True, stats=None):
     clipped = 0.0
     dispatch_ms = 0.0
     max_event_ms = 0.0
-    with Session(ws_url, timeout) as s:
-        for raw in events:
-            # 拷贝后再剥元信息：**就地 pop 会吃掉调用方的数据**，同一
-            # seq 重试时 _delay_ms/unresolved 全没了（节奏丢失、亮牌失效）
-            ev = dict(raw)
-            if ev.pop("unresolved", False) and \
-                    ev.get("key") not in unresolved:
-                unresolved.append(ev.get("key"))
-            d = float(ev.pop("_delay_ms", 0) or 0)
-            if realtime and d > 0:
-                planned += d
-                if d > 3000.0:
-                    clipped += d - 3000.0
-                    d = 3000.0
-                time.sleep(d / 1000.0)
-                slept += d
-            t = ev.get("type")
-            _t0 = time.time()
-            if t == "insertText":
-                s.command("Input.insertText", {"text": ev.get("text", "")})
-            elif t in _KEY_TYPES:
-                s.command("Input.dispatchKeyEvent", ev)
-            else:
-                s.command("Input.dispatchMouseEvent", ev)
-            _dt = (time.time() - _t0) * 1000.0
-            dispatch_ms += _dt
-            max_event_ms = max(max_event_ms, _dt)
-            n += 1
-    if isinstance(stats, dict):
-        stats["planned_ms"] = round(planned, 1)
-        stats["slept_ms"] = round(slept, 1)
-        stats["clipped_ms"] = round(clipped, 1)
-        stats["events"] = n
-        stats["dispatch_ms"] = round(dispatch_ms, 1)
-        stats["max_event_ms"] = round(max_event_ms, 1)
+    try:
+        with Session(ws_url, timeout) as s:
+            for raw in events:
+                # 拷贝后再剥元信息：**就地 pop 会吃掉调用方的数据**，同一
+                # seq 重试时 _delay_ms/unresolved 全没了（节奏丢失、亮牌失效）
+                ev = dict(raw)
+                if ev.pop("unresolved", False) and \
+                        ev.get("key") not in unresolved:
+                    unresolved.append(ev.get("key"))
+                d = float(ev.pop("_delay_ms", 0) or 0)
+                if realtime and d > 0:
+                    planned += d
+                    if d > 3000.0:
+                        clipped += d - 3000.0
+                        d = 3000.0
+                    time.sleep(d / 1000.0)
+                    slept += d
+                t = ev.get("type")
+                _t0 = time.monotonic()
+                try:
+                    if t == "insertText":
+                        s.command("Input.insertText",
+                                  {"text": ev.get("text", "")})
+                    elif t in _KEY_TYPES:
+                        s.command("Input.dispatchKeyEvent", ev)
+                    else:
+                        s.command("Input.dispatchMouseEvent", ev)
+                finally:
+                    _dt = (time.monotonic() - _t0) * 1000.0
+                    dispatch_ms += _dt
+                    max_event_ms = max(max_event_ms, _dt)
+                n += 1
+    finally:
+        # 即使某条 ACK 超时/WS 报错，也先把已有统计写出去（最需要数据时
+        # 不能是空的）；异常继续向上抛，不吞。
+        if isinstance(stats, dict):
+            stats["planned_ms"] = round(planned, 1)
+            stats["slept_ms"] = round(slept, 1)
+            stats["clipped_ms"] = round(clipped, 1)
+            stats["events"] = n
+            stats["dispatch_ms"] = round(dispatch_ms, 1)
+            stats["max_event_ms"] = round(max_event_ms, 1)
     return n, unresolved
+
+
+def target_for_ws(port, ws):
+    """按 ws 找 page 标签的 {title,url}（url_sub 选页后盖章用）。"""
+    for t in tabs(port):
+        if t.get("ws") == ws:
+            return {"title": t.get("title"), "url": t.get("url")}
+    return {}
 
 
 def ws_for(port, index=0, url_sub=None):
@@ -1498,7 +1513,13 @@ def shot(port, ws=None, index=0, fullpage=True, stitch=True,
                    {"format": "png", "captureBeyondViewport": bool(fullpage)})
     except RuntimeError:
         if fullpage and stitch and lay:
-            return _stitch_fullpage(ws, lay, dpr, max_pixels=max_pixels)
+            png, sinfo = _stitch_fullpage(ws, lay, dpr, max_pixels=max_pixels)
+            if vis:
+                sinfo["page_visibility"] = vis
+            if activated:
+                sinfo["activated"] = True
+                sinfo["frame_stale_risk"] = False
+            return png, sinfo
         raise
     data = res.get("data")
     if not data:

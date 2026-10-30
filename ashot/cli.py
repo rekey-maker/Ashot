@@ -552,14 +552,17 @@ def _resolve_cdp_ws(a):
         return None
     for w in info.get("warnings") or []:
         print("⚠ %s" % w, file=sys.stderr)
-    tgt = cdp.target_info(port, int(getattr(a, "index", 0) or 0))
+    ws_url = cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0),
+                        url_sub=getattr(a, "url_sub", None))
+    tgt = (cdp.target_for_ws(int(port), ws_url)
+           if getattr(a, "url_sub", None)
+           else cdp.target_info(port, int(getattr(a, "index", 0) or 0)))
     print("target: port=%s%s%s"
           % (port,
              (" process=%s" % info["process"]) if info.get("process") else "",
              (" | %s" % tgt.get("title")) if tgt.get("title") else ""),
           file=sys.stderr)
-    return cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0),
-                      url_sub=getattr(a, "url_sub", None))
+    return ws_url
 
 
 def _cmd_cdp_key(a):
@@ -987,6 +990,8 @@ def main(argv=None):
                     help="超长页（>16384px）不滚动拼接，按单张上限如实报错")
     cs.add_argument("--no-activate", dest="no_activate", action="store_true",
                     help="后台标签页不自动 bringToFront（会旧帧/超时）")
+    cs.add_argument("--url-sub", dest="url_sub", default=None,
+                    help="按 URL 子串选页（比 index 稳；v0.7.0）")
     cs.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
     cs.set_defaults(func=_cmd_cdp_shot)
 
