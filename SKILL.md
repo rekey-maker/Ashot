@@ -48,7 +48,7 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   （**度**，顺时针，y 向下；sweep 负=逆时针，>360 夹到一圈；
   也可用 end 代替 sweep）/ `polyline` points=[[x,y],...] 或
   coords="x1,y1,x2,y2,..."。三者都进 `bounds_warn`。
-  **ops 字段白名单**：x/y/w/h/x1..、color/width、radius、text/size/font/
+  **ops 字段白名单**：x/y/w/h/x1..、color/width/fill、radius、text/size/font/
   bold/w、value/n、style、dim、block、start/sweep/end（及 `*_angle`）、
   points/coords/area、selector/ref/dpr、pad；白名单外字段（`colour`/
   `widht`）直接报错。`pad` 对矩形族向外扩，坐标型与 selector 型都生效，
@@ -60,6 +60,14 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   头宽=3.5×width，短箭头长封顶 0.4×全长；端点定总长，杆=总长−头可
   自由伸缩；`"style":"line"` 回退旧直杆）；`rect` 可选 `radius`（圆角
   描边）。**width 用量**：4K 截图 10~14、1080p 4~6（width=杆像素粗细）。
+  **v0.7.4 色块填充 `fill`**：闭合形状 rect（含 radius 圆角）/ellipse/
+  curve/polyline/arc 加 `"fill":"#RRGGBB"`（或带透明度 `#RRGGBBAA`）即填色——
+  **先填后描**（描边压在色块上）；弧的 fill=**扇形**（圆心→弧→闭合回圆心，
+  同 GDI+ FillPie）；曲线/折线按多边形自动闭合。line/text/像素 ops 给
+  fill 直接报错（无内部可填）。填充规则=**非零环绕 Winding**（GDI+ 缺省
+  是偶奇 Alternate，已显式改 Winding，与 SVG 缺省一致；凹/自交多边形
+  矢量路与像素降级路结果一致）。半透明（仅 fill）source-over 两路一致；
+  描边/文字仍只支持 #RRGGBB（像素降级路不做 alpha，8 位 color 会报错）。
   **渲染双后端（v0.1.7 矢量 / v0.1.8 收据）**：矢量形状走 GDI+
   （System.Drawing 抗锯齿，真矢量——边缘平滑无马赛克感，文字走微软
   雅黑）；GDI+ 失败自动降级纯像素画布（硬边）。收据 `backend` 只反映

@@ -30,11 +30,14 @@ _RECT_PAD_KINDS = ("rect", "ellipse", "mosaic", "blur", "spotlight",
 _ALLOWED_KEYS = {
     "kind", "x", "y", "w", "h", "x1", "y1", "x2", "y2",
     "x0", "y0", "c1x", "c1y", "c2x", "c2y", "points", "coords", "area",
-    "color", "width", "radius", "text", "size", "font", "bold", "value",
-    "n", "style", "dim", "block", "start", "sweep", "end",
+    "color", "width", "fill", "radius", "text", "size", "font", "bold",
+    "value", "n", "style", "dim", "block", "start", "sweep", "end",
     "start_angle", "sweep_angle", "end_angle", "dpr",
     "selector", "ref", "pad",
 }
+# v0.7.4 fill（色块填充）：这些闭合形状支持 "fill" 颜色；其余 kind 给了
+# fill 直接报错（apply_pad 单源校验，两路同口径）。
+_FILL_KINDS = ("rect", "ellipse", "curve", "arc", "polyline")
 
 
 def _box4(op):
@@ -75,6 +78,22 @@ def apply_pad(ops):
         if "dpr" in op and not (op.get("selector") or op.get("ref")):
             raise ValueError("dpr 只对 selector/ref op 有效；坐标型 op 请用"
                              "全局 --dpr（v0.6.4）")
+        if op.get("fill") not in (None, "", False):
+            if op.get("kind") not in _FILL_KINDS:
+                raise ValueError("fill 只支持闭合形状 %s（线/文字/像素 ops 没有"
+                                 "内部可填）：kind=%r"
+                                 % (list(_FILL_KINDS), op.get("kind")))
+            if isinstance(op.get("fill"), str) and \
+                    len(op["fill"].lstrip("#")) not in (6, 8):
+                raise ValueError("fill 颜色须 #RRGGBB 或 #RRGGBBAA：%r"
+                                 % (op.get("fill"),))
+        # v0.7.4 审查修正：像素降级路的描边/文字仍是覆盖式直写，只有 fill
+        # 做 alpha 混合；8 位描边颜色会让 GDI+（半透明）与像素路（不透明）
+        # 出两种结果——在入口统一拒掉，别让同一 ops 两路不一致。
+        col = op.get("color")
+        if isinstance(col, str) and len(col.lstrip("#")) == 8:
+            raise ValueError("半透明只支持 fill；描边/文字颜色请用 #RRGGBB：%r"
+                             % (col,))
         unknown = set(op) - _ALLOWED_KEYS
         if unknown:
             raise ValueError("未知 op 字段 %s（kind=%r）——拼写检查，"
@@ -105,11 +124,13 @@ STROKE_KINDS = ("rect", "ellipse", "line", "curve", "arc", "polyline",
 
 
 def _hex(color):
+    """#RRGGBB / #RRGGBBAA。**8 位只给 fill 用**：像素降级路的描边/文字
+    不做 alpha 混合，apply_pad 会在入口拒绝 8 位 color，避免两路不一致。"""
     if not color:
         return DEFAULT_COLOR
     c = str(color).lstrip("#")
-    if len(c) != 6:
-        raise ValueError("颜色须 #RRGGBB：%r" % color)
+    if len(c) not in (6, 8):
+        raise ValueError("颜色须 #RRGGBB 或 #RRGGBBAA：%r" % color)
     int(c, 16)   # 非法 hex 直接抛
     return "#" + c
 
@@ -168,9 +189,24 @@ def _ellipse_path(x, y, w, h):
 
 
 def _stroke(pts, color, width):
+    if isinstance(color, str) and len(color.lstrip("#")) == 8:
+        raise ValueError("描边不支持 #RRGGBBAA（半透明只支持 fill）：%r"
+                         % (color,))
     return {"t": "stroke", "pts": [[round(px, 2), round(py, 2)]
                                    for px, py in pts],
             "color": _hex(color), "width": float(width)}
+
+
+def _fill(pts, color, oi):
+    """填充多边形指令（v0.7.4 起对用户开放；实心箭头此前已内部使用）。
+    点列按多边形闭合语义（末点自动连回首点）；GDI+ 侧走 FillPolygon
+    + FillMode.Winding（非零环绕，与 SVG 缺省 fill-rule 同口径——
+    官方文档：GDI+ 不指定时缺省是 Alternate/偶奇，必须显式传 Winding）。"""
+    if len(pts) < 3:
+        raise ValueError("fill 至少需要 3 个点（线没有内部可填）")
+    return {"t": "fill", "pts": [[round(px, 2), round(py, 2)]
+                                 for px, py in pts],
+            "color": _hex(color), "i": oi}
 
 
 def _fat_arrow_poly(x1, y1, x2, y2, width):
@@ -244,6 +280,7 @@ def compile_ops(ops):
         if kind in ("mosaic", "blur", "spotlight", "smarterase"):
             pixel_ops.append(op)
             continue
+        fill = op.get("fill")
         if kind in ("rect", "ellipse", "line"):
             if kind == "rect":
                 x, y, w, h = _nums(op, ("x", "y", "w", "h"))
@@ -254,23 +291,34 @@ def compile_ops(ops):
             else:
                 x1, y1, x2, y2 = _nums(op, ("x1", "y1", "x2", "y2"))
                 pts = [(x1, y1), (x2, y2)]
+            if fill:
+                shapes.append(_fill(pts, fill, oi))   # 先填后描：描边压在色块上
             sh = _stroke(pts, color, width)
             sh["i"] = oi
             shapes.append(sh)
         elif kind == "curve":
             pts = geometry.pad_points(
                 geometry.bezier_points(*geometry.parse_curve(op)))
+            if fill:
+                shapes.append(_fill(pts, fill, oi))   # 多边形语义自动闭合
             sh = _stroke(pts, color, width)
             sh["i"] = oi
             shapes.append(sh)
         elif kind == "arc":
-            pts = geometry.pad_points(
-                geometry.arc_points(*geometry.parse_arc(op)))
+            args = geometry.parse_arc(op)
+            pts = geometry.pad_points(geometry.arc_points(*args))
+            if fill:
+                # 弧的"内部"= 扇形：圆心 → 弧 → 闭合回圆心（GDI+ FillPie
+                # 同语义：两条半径线夹出的扇区）
+                cx, cy = args[0] + args[2] / 2.0, args[1] + args[3] / 2.0
+                shapes.append(_fill([(cx, cy)] + pts, fill, oi))
             sh = _stroke(pts, color, width)
             sh["i"] = oi
             shapes.append(sh)
         elif kind == "polyline":
             pts = geometry.polyline_points(geometry.parse_polyline(op))
+            if fill:
+                shapes.append(_fill(pts, fill, oi))
             sh = _stroke(pts, color, width)
             sh["i"] = oi
             shapes.append(sh)

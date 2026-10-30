@@ -2,6 +2,27 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.4] - 2026-10-31
+
+### fill：色块填充（用户侧开关；实心箭头此前已内部使用同款引擎）
+- ops 新增 `fill` 字段：闭合形状 rect（含 radius 圆角）/ellipse/curve/
+  polyline/arc 可指定填充色；先填后描（描边压在色块上）。弧的填充语义=
+  **扇形**（圆心→弧→闭合回圆心，GDI+ FillPie 同语义）；曲线/折线按
+  多边形自动闭合。line/text/像素 ops 给 fill 直接报错（无内部可填）。
+- 颜色升级 `#RRGGBBAA`：**仅 fill 支持半透明**；描边/文字仍只收
+  `#RRGGBB`（像素降级路的描边/文字不做 alpha，入口拒绝 8 位 color，
+  避免两路出不同结果）。GDI+ fill 用 SolidBrush 原生混合，像素降级路
+  `fill_polygon` 走 source-over（含目标 alpha，透明底也正确）。
+  注意 .NET ColorTranslator 的 8 位 HTML 色是 #AARRGGBB（alpha 在前），
+  ps1 手动按「alpha 在后」解析。
+- 填充规则=**非零环绕（Winding）**：微软官方文档明示 GDI+ 不指定时缺省是
+  Alternate（偶奇）——ps1 显式传 `FillMode::Winding`，与 SVG 缺省 fill-rule
+  同口径；像素路扫描线同用 non-zero（凹/自交多边形两路一致）。
+- apply_pad 单源校验：`fill` 进字段白名单 + 不支持的 kind 报错（两路同口径）。
+- 新测试 `tests/test_fill.py` 13 例（编译顺序/扇形首点/拒收/两路实心/两路
+  半透明混合/凹多边形两路一致/bounds_warn/CLI 端到端）。
+- 常规 **205 passed, 6 skipped**（+13）。
+
 ## [0.7.3] - 2026-10-30
 
 ### url_sub 全覆盖

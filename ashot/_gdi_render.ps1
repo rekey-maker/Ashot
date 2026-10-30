@@ -21,7 +21,18 @@ $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
 $boxes = @()
 foreach ($s in $spec.shapes) {
-    $col = [System.Drawing.ColorTranslator]::FromHtml($s.color)
+    # v0.7.4: #RRGGBBAA (alpha LAST) -- ColorTranslator's 8-digit html form
+    # is #AARRGGBB (alpha first), so parse the alpha-suffixed form manually.
+    $colstr = [string]$s.color
+    if ($colstr.Length -eq 9 -and $colstr.StartsWith('#')) {
+        $col = [System.Drawing.Color]::FromArgb(
+            [Convert]::ToInt32($colstr.Substring(7, 2), 16),
+            [Convert]::ToInt32($colstr.Substring(1, 2), 16),
+            [Convert]::ToInt32($colstr.Substring(3, 2), 16),
+            [Convert]::ToInt32($colstr.Substring(5, 2), 16))
+    } else {
+        $col = [System.Drawing.ColorTranslator]::FromHtml($colstr)
+    }
     if ($s.t -eq 'stroke') {
         $pen = New-Object System.Drawing.Pen($col, [float]$s.width)
         $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
@@ -42,7 +53,11 @@ foreach ($s in $spec.shapes) {
             $pts[$i] = New-Object System.Drawing.PointF(
                 [float]$s.pts[$i][0], [float]$s.pts[$i][1])
         }
-        $g.FillPolygon($brush, $pts)
+        # Winding (nonzero) on purpose: GDI+ docs state the unspecified
+        # default is Alternate (even-odd); nonzero matches SVG's default
+        # fill-rule and self-overlapping user polygons (star/polyyline fills).
+        $g.FillPolygon($brush, $pts,
+            [System.Drawing.Drawing2D.FillMode]::Winding)
         $brush.Dispose()
     }
     elseif ($s.t -eq 'dot') {

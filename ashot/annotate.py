@@ -220,6 +220,62 @@ class Canvas:
                 if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
                     self._px(xx, yy, color)
 
+    def fill_polygon(self, pts, color, alpha=255):
+        """填充多边形（v0.7.4）：扫描线 + 非零环绕（nonzero）规则——与矢量路
+        GDI+ FillPolygon(FillMode.Winding) 同口径；多边形自动闭合（末点连回
+        首点）。alpha<255 走 source-over 混合——像素路的 alpha 混合只有这里
+        （描边原语仍是覆盖式直写）。"""
+        n = len(pts)
+        if n < 3:
+            return
+        a = max(0, min(255, int(alpha))) / 255.0
+        ys = [float(p[1]) for p in pts]
+        y0 = max(0, int(math.floor(min(ys))))
+        y1 = min(self.h - 1, int(math.ceil(max(ys))))
+        px = self.px
+        for yy in range(y0, y1 + 1):
+            yc = yy + 0.5
+            xs = []
+            for k in range(n):
+                ax, ay = float(pts[k][0]), float(pts[k][1])
+                bx, by = float(pts[(k + 1) % n][0]), float(pts[(k + 1) % n][1])
+                if (ay <= yc < by) or (by <= yc < ay):
+                    xs.append((ax + (yc - ay) * (bx - ax) / (by - ay),
+                               1 if by > ay else -1))
+            if not xs:
+                continue
+            xs.sort(key=lambda c: c[0])
+            wind, seg, spans = 0, None, []
+            for xint, d in xs:
+                prev = wind
+                wind += d
+                if prev == 0 and wind != 0:
+                    seg = xint
+                elif prev != 0 and wind == 0:
+                    spans.append((seg, xint))
+                    seg = None
+            for s, e in spans:
+                # 像素中心 (xx+0.5, yy+0.5) 落在 [s, e) 内才涂
+                xa = max(0, int(math.ceil(s - 0.5)))
+                xb = min(self.w - 1, int(math.ceil(e - 0.5)) - 1)
+                for xx in range(xa, xb + 1):
+                    i = (yy * self.w + xx) * 4
+                    if a >= 1.0:
+                        px[i], px[i + 1], px[i + 2] = color
+                        px[i + 3] = 255
+                    else:
+                        # 与 GDI+ source-over 一致：目标 alpha 也参与，
+                        # 透明底上的半透明 fill 得 (RGB, alpha) 而不是黑底+不透明。
+                        ba = px[i + 3] / 255.0
+                        oa = a + ba * (1.0 - a)
+                        if oa <= 0:
+                            continue
+                        for c in range(3):
+                            px[i + c] = int(round(
+                                (color[c] * a + px[i + c] * ba * (1.0 - a))
+                                / oa))
+                        px[i + 3] = int(round(oa * 255))
+
     def text(self, x, y, s, color=DEFAULT_COLOR, size=16, max_width=None):
         """首版 ASCII 8x16 点阵；非 ASCII 字符画占位框（诚实降级，
         中文文本标注留 B 交互窗形态——点阵字体不破零依赖红线）。
@@ -595,10 +651,19 @@ def annotate_png(png_bytes, ops):
                 pts = geometry.pad_points(
                     geometry.bezier_points(*geometry.parse_curve(op)))
             elif kind == "arc":
-                pts = geometry.pad_points(
-                    geometry.arc_points(*geometry.parse_arc(op)))
+                args = geometry.parse_arc(op)
+                pts = geometry.pad_points(geometry.arc_points(*args))
             else:
                 pts = geometry.polyline_points(geometry.parse_polyline(op))
+            if op.get("fill"):
+                # v0.7.4：先填后描，与矢量路 fill→stroke 顺序一致；
+                # 弧的填充语义=扇形（圆心→弧→闭合回圆心）
+                rgb, al = _color_a(op["fill"])
+                fp = pts
+                if kind == "arc":
+                    fp = ([(args[0] + args[2] / 2.0, args[1] + args[3] / 2.0)]
+                          + list(pts))
+                cv.fill_polygon(fp, rgb, al)
             for (ax, ay), (bx, by) in zip(pts, pts[1:]):
                 seg = geometry.clip_segment(ax, ay, bx, by, cv.w - 1, cv.h - 1)
                 if seg is None:
@@ -613,8 +678,16 @@ def annotate_png(png_bytes, ops):
                   else None)
 
         if kind == "rect":
+            if op.get("fill"):
+                rgb, al = _color_a(op["fill"])
+                cv.fill_polygon(
+                    vector._rect_path(n[0], n[1], n[2], n[3],
+                                      int(op.get("radius", 0))), rgb, al)
             cv.rect(*n, color, width, radius=int(op.get("radius", 0)))
         elif kind == "ellipse":
+            if op.get("fill"):
+                rgb, al = _color_a(op["fill"])
+                cv.fill_polygon(vector._ellipse_path(*n), rgb, al)
             cv.ellipse(*n, color, width)
         elif kind == "arrow":
             cv.arrow(*n, color, width, style=str(op.get("style", "fat")))
@@ -670,6 +743,19 @@ def _color(v):
         return DEFAULT_COLOR
     v = str(v).lstrip("#")
     return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _color_a(v):
+    """fill 色（v0.7.4）-> ((r,g,b), alpha)：6 位=不透明，
+    8 位 #RRGGBBAA 取 alpha（与矢量路 _hex 的 6/8 位口径一致）。"""
+    s = str(v).lstrip("#")
+    if len(s) not in (6, 8):
+        raise ValueError("fill 颜色须 #RRGGBB 或 #RRGGBBAA：%r" % v)
+    try:
+        rgb = tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        raise ValueError("fill 颜色需要合法 hex：%r" % v)
+    return rgb, (int(s[6:8], 16) if len(s) == 8 else 255)
 
 
 def annotate_interactive(png_bytes):

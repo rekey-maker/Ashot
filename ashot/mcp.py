@@ -186,6 +186,10 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     `w`（布局宽）也会被缩放，换行位置可能变。
     **v0.6.2**：`pad` 对**坐标型与 selector 型**的矩形族都生效（向外扩，
     负值报错）；op 字段走白名单，拼错（colour/widht）直接 ValueError。
+    **v0.7.4**：闭合形状（rect/ellipse/curve/polyline/arc）可带
+    `fill`=填充色（先填后描；arc=扇形；line/text 给 fill 报错）；颜色
+    支持 `#RRGGBBAA` 半透明（GDI+ 与像素降级路都 source-over 混合），
+    填充规则=非零环绕（GDI+ 缺省 Alternate 已显式改 Winding）。
     **v0.6.0/0.6.1**：ops 可用 `selector` 或 `ref`（ref 来自
     `ashot_snapshot`）直接按元素定位，矩形族与 text 支持，`pad` 外扩；
     selector/ref 已含页面 dpr，**不要再传全局 dpr**（会二次乘，v0.6.1
