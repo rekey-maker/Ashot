@@ -733,14 +733,19 @@ def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
 
 
 def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,
-              verify=""):
+              verify="", activate=True, url_sub=None):
     """CDP 整段文本输入（v0.2.3 填表利器）：Input.insertText 粘贴式
     （不逐键击、不触发每键 keydown）。x/y 可选——先点击聚焦输入框
     再输入。**与用户键鼠天然隔离**：CDP 事件只进指定标签页，不占用户
     键盘（v0.2.0 §4.2.2）。verify=一段 JS（可选）：输完立刻求值
     （如 `return document.activeElement.value`），结果进收据——用来
     确认字真的进去了。返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
+    vis = cdp.page_visibility(ws_url)
+    activated = False
+    if vis == "hidden" and as_bool(activate, True):
+        cdp.activate(ws_url)
+        activated = True
     seq = ([{"type": "mouseMoved", "x": int(x), "y": int(y),
              "modifiers": 0},
             {"type": "mousePressed", "x": int(x), "y": int(y),
@@ -750,8 +755,20 @@ def _cdp_type(text, x=None, y=None, port=None, index=0, ws=None,
              "button": "left", "buttons": 0, "clickCount": 1,
              "modifiers": 0}] if x is not None and y is not None
         else []) + cdp.insert_text_events(text)
-    n, _ = cdp.dispatch(ws_url, seq)
+    stats = {}
+    n, _ = cdp.dispatch(ws_url, seq, stats=stats)
     rec = {"ok": True, "dispatched": n}
+    for k in ("planned_ms", "slept_ms", "dispatch_ms", "max_event_ms"):
+        if k in stats:
+            rec[k] = stats[k]
+    if n:
+        rec["per_event_ms"] = round(stats.get("dispatch_ms", 0) / n, 1)
+    if stats.get("max_event_ms", 0) > 2000:
+        rec["slow_ack"] = True
+    if activated:
+        rec["activated"] = True
+    if vis:
+        rec["page_visibility"] = vis
     if verify:
         try:
             r = cdp.evaluate(ws_url, verify)
@@ -792,12 +809,13 @@ def _diff(a, b, threshold=0.12, out=None):
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _element(selector, port=None, index=0, ws=None, scroll=False):
+def _element(selector, port=None, index=0, ws=None, scroll=False,
+             url_sub=None):
     """元素在视口里的 CSS 矩形 + 可见性（v0.2.7）：x/y/w/h/cx/cy、
     visible（checkVisibility）/in_viewport/visible_ratio/occluded
     （elementFromPoint 中心）/pointer_events/dpr/scroll。**坐标是主页面
     视口 CSS 像素，可直接喂 cdp_click**；截图坐标要先乘 to_css。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     rec = dom.element_rect(ws_url, selector, scroll=as_bool(scroll))
     rec["ok"] = True
     return json.dumps(rec, ensure_ascii=False)

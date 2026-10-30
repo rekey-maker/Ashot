@@ -201,6 +201,7 @@ def test_background_tab_shot_activates(browser):
         assert png1 == ref1, "后台页截图与前台参考图不一致（旧帧）"
         assert info.get("activated") is True, info
         assert info.get("page_visibility") == "hidden", info
+        assert info.get("frame_stale_risk") is False, info
         cdp.call(wb, "Runtime.evaluate",
                  {"expression": "document.getElementById('t').textContent='B2'",
                   "returnByValue": True}, 5)

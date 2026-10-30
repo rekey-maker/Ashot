@@ -735,6 +735,11 @@ def _cmd_cdp_type(a):
             print("✗ --x 与 --y 需成对给出（只给其一时无法聚焦）",
                   file=sys.stderr)
             return 1
+        vis = cdp.page_visibility(ws)
+        activated = False
+        if vis == "hidden" and not getattr(a, "no_activate", False):
+            cdp.activate(ws)
+            activated = True
         seq = ([{"type": "mouseMoved", "x": a.x, "y": a.y,
                  "modifiers": 0},
                 {"type": "mousePressed", "x": a.x, "y": a.y,
@@ -744,8 +749,16 @@ def _cmd_cdp_type(a):
                  "button": "left", "buttons": 0, "clickCount": 1,
                  "modifiers": 0}] if a.x is not None else []) + \
             cdp.insert_text_events(a.text)
-        n, _ = cdp.dispatch(ws, seq)
+        stats = {}
+        n, _ = cdp.dispatch(ws, seq, stats=stats)
         print("dispatched: %d" % n)
+        for k in ("planned_ms", "dispatch_ms", "max_event_ms"):
+            if k in stats:
+                print("%s: %s" % (k, stats[k]))
+        if stats.get("max_event_ms", 0) > 2000:
+            print("⚠ slow_ack: 单事件 >2s", file=sys.stderr)
+        if activated:
+            print("page_visibility: hidden → activated", file=sys.stderr)
         if getattr(a, "verify", ""):
             try:
                 r = cdp.evaluate(ws, a.verify)
@@ -1163,6 +1176,8 @@ def main(argv=None):
     ct2.add_argument("--x", type=int, default=None,
                      help="可选：先点击该坐标聚焦输入框再输入")
     ct2.add_argument("--y", type=int, default=None, help="点击 y")
+    ct2.add_argument("--no-activate", dest="no_activate", action="store_true",
+                     help="后台标签页不自动 bringToFront")
     ct2.add_argument("--verify", default="",
                      help='输完立刻求值的一段 JS，结果进收据（如 '
                      '"return document.activeElement.value"）')

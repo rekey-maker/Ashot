@@ -1519,6 +1519,10 @@ def shot(port, ws=None, index=0, fullpage=True, stitch=True,
             if activated:
                 sinfo["activated"] = True
                 sinfo["frame_stale_risk"] = False
+            elif vis == "visible":
+                sinfo["frame_stale_risk"] = False
+            else:
+                sinfo["frame_stale_risk"] = "unknown"
             return png, sinfo
         raise
     data = res.get("data")
@@ -1532,8 +1536,12 @@ def shot(port, ws=None, index=0, fullpage=True, stitch=True,
     if activated:
         info["activated"] = True
         info["frame_stale_risk"] = False
-    elif vis == "hidden":
-        info["frame_stale_risk"] = True
+    elif vis == "visible":
+        info["frame_stale_risk"] = False
+    else:
+        # 取不到 visibility 或 prerrer：不知道是否新帧，给 "unknown"
+        # 而不是让键消失（缺键 = 没测，和 false 必须能区分）
+        info["frame_stale_risk"] = "unknown"
     sz = png_size(png)
     if sz:
         info["w"], info["h"] = sz[0], sz[1]

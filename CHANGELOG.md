@@ -2,6 +2,24 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.2] - 2026-10-30
+
+### 复审补丁（另一窗口 v0.7.0 检查）
+- **`frame_stale_risk` 三态**：之前只有「activated→false / hidden→true」，
+  可见或取不到 visibility 时**键直接消失**，调用方分不清「安全」与「没测」。
+  现在恒在：`false`（已前台化或 visible）/ `"unknown"`（取不到/其他）；
+  删除永远走不到的 `elif vis=="hidden"` 分支。
+- **`truncated_at.depth` 真实深度**：v0.7.1 已从常量 12 改为 walk 停止时的
+  实际 depth（本窗口检查基于 0.7.0，故仍看到旧值）。
+- **`ashot_element` / `ashot_cdp_type` 补 `url_sub`**：多页签下取坐标/输入
+  不再依赖会位移的 index；`_cdp_type` 同时补 `activate`（hidden 前台化）、
+  `dispatch_ms`/`per_event_ms`/`slow_ack` 收据；CLI `cdp-type` 加
+  `--no-activate`。MCP 支持 `url_sub` 的工具从 6 个增到 **8 个**。
+
+### 测试
+- 常规 **191 passed, 6 skipped**；`ASHOT_E2E=1` 时 **6 passed**（后台页
+  收据断言 `frame_stale_risk is False`）。
+
 ## [0.7.1] - 2026-10-30
 
 ### 复审修复（v0.7.0 两路子 agent 只读复审）

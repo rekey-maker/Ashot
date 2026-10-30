@@ -511,7 +511,7 @@ def test_mcp_tool_schemas():
     tp = mcp_mod.TOOLS["ashot_cdp_type"]["inputSchema"]
     assert tp["required"] == ["text"]
     assert set(tp["properties"]) == {"text", "x", "y", "port", "index",
-                                     "ws", "verify"}
+                                     "ws", "verify", "activate", "url_sub"}
     hh = mcp_mod.TOOLS["ashot_hash"]["inputSchema"]
     assert hh["required"] == ["image"]
     assert set(hh["properties"]) == {"image", "algo"}
@@ -521,7 +521,8 @@ def test_mcp_tool_schemas():
     assert dd["properties"]["threshold"]["type"] == "number"
     el = mcp_mod.TOOLS["ashot_element"]["inputSchema"]
     assert el["required"] == ["selector"]
-    assert set(el["properties"]) == {"selector", "port", "index", "ws", "scroll"}
+    assert set(el["properties"]) == {"selector", "port", "index", "ws",
+                                     "scroll", "url_sub"}
     assert el["properties"]["scroll"]["type"] == "boolean"
     fe2 = mcp_mod.TOOLS["ashot_frame_element"]["inputSchema"]
     assert fe2["required"] == ["iframe", "selector"]
@@ -3126,3 +3127,24 @@ def test_drag_hint_only_when_clipped(monkeypatch):
     monkeypatch.setattr(cdp_mod, "dispatch", slow_dispatch)
     rec = _json.loads(mcp_mod._cdp_drag(0, 0, 10, 0))
     assert "hint" in rec and rec["slow_ack"] is True
+
+
+def test_cdp_type_handler_v072(monkeypatch):
+    """type 也要有 activate/url_sub 与计时收据（此前完全裸奔）。"""
+    from ashot import cdp as cdp_mod
+    from ashot import mcp as mcp_mod
+    import json as _json
+    monkeypatch.setattr(mcp_mod, "_resolve_ws", lambda *a, **k: "ws")
+    monkeypatch.setattr(cdp_mod, "page_visibility", lambda ws: "visible")
+
+    def fake_dispatch(ws, seq, realtime=True, stats=None):
+        stats["dispatch_ms"] = 20.0
+        stats["max_event_ms"] = 10.0
+        stats["planned_ms"] = 0.0
+        return len(seq), []
+
+    monkeypatch.setattr(cdp_mod, "dispatch", fake_dispatch)
+    rec = _json.loads(mcp_mod._cdp_type("hello"))
+    assert rec["dispatched"] == 1
+    assert rec["per_event_ms"] == 20.0
+    assert "slow_ack" not in rec

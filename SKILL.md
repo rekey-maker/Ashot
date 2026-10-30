@@ -227,7 +227,8 @@ MCP 只做最终验收。
 
 - **后台标签页**：`cdp-shot`/`cdp-click`/`cdp-drag` 会先查
   `document.visibilityState`；hidden 时自动 `Page.bringToFront` 再动作，
-  收据带 `activated`/`page_visibility`（`frame_stale_risk` 只有截图有）。
+  收据带 `activated`/`page_visibility`（`frame_stale_risk` 三态：
+  false/unknown，只有截图有）。
   注意 bringToFront 会切走该浏览器 active tab。不想切 tab 用
   `--no-activate`（截图会直接报错，不交旧帧）。
 - **慢 ACK**：click/drag 收据新增 `planned_ms`/`dispatch_ms`/
