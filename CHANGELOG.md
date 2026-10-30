@@ -2,6 +2,19 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.3] - 2026-10-30
+
+### url_sub 全覆盖
+- 补齐最后 6 个页面工具：`ashot_annotate`（selector/ref）、`ashot_frames`、
+  `ashot_frame_element`、`ashot_cdp_key`、`ashot_cdp_wheel`、
+  `ashot_cdp_tabs`（按 URL 过滤列表）。
+- 现在 **15 个带 port/index/ws 的页面工具全部支持 `url_sub`**；其余 8 个
+  （截屏/裁切/缩放/字体/展示/hash/diff/compose）不需要选页。
+- CLI 全部 cdp-*（含 `cdp-tabs`）支持 `--url-sub`。
+
+### 测试
+- 常规 **192 passed, 6 skipped**（新增 cdp-tabs 过滤用例）。
+
 ## [0.7.2] - 2026-10-30
 
 ### 复审补丁（另一窗口 v0.7.0 检查）

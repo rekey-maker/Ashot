@@ -236,5 +236,7 @@ MCP 只做最终验收。
 - **snapshot**：`--root "#search-content"` 只扫子树；`max_nodes` 只数 ref
   （结构节点另有 4× 上限）；截断带 `truncated_at{refs,nodes,depth,
   last_selector}`。卡片列表先给 root。
-- **选页**：CLI 全部 cdp-* 支持 `--url-sub`；MCP 的 shot/click/drag/eval/
-  snapshot/view 支持 `url_sub`（index 会因新开页位移，别再依赖）。
+- **选页**：CLI 全部 cdp-*（含 cdp-tabs 的 URL 过滤）支持 `--url-sub`；
+  MCP **15 个页面工具全部支持 `url_sub`**（shot/click/dblclick/drag/key/
+  wheel/type/eval/view/snapshot/element/frames/frame-element/annotate/
+  cdp-tabs）；index 会因新开页位移，别再依赖。

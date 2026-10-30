@@ -452,7 +452,7 @@ def test_mcp_tool_schemas():
     assert sc["required"] == ["image", "ops"]
     assert set(sc["properties"]) == {"image", "ops", "out", "preview",
                                      "jpg", "quality", "max_side", "dpr",
-                                     "port", "index", "ws", "space"}
+                                     "port", "index", "ws", "space", "url_sub"}
     assert sc["properties"]["dpr"]["type"] == "number", \
         "v0.5.1：dpr 典型值 1.25/1.566，声明 integer 会让宿主拒参"
     assert "dpr" in mcp_mod.TOOLS["ashot_annotate"]["description"], \
@@ -492,7 +492,7 @@ def test_mcp_tool_schemas():
                                      "caption", "width"}
     ct = mcp_mod.TOOLS["ashot_cdp_tabs"]["inputSchema"]
     assert ct["required"] == []
-    assert set(ct["properties"]) == {"port"}
+    assert set(ct["properties"]) == {"port", "url_sub"}
     cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
     assert cs["required"] == []
     assert set(cs["properties"]) == {"port", "index", "fullpage", "out",
@@ -526,14 +526,15 @@ def test_mcp_tool_schemas():
     assert el["properties"]["scroll"]["type"] == "boolean"
     fe2 = mcp_mod.TOOLS["ashot_frame_element"]["inputSchema"]
     assert fe2["required"] == ["iframe", "selector"]
-    assert set(fe2["properties"]) == {"iframe", "selector", "port", "index", "ws"}
+    assert set(fe2["properties"]) == {"iframe", "selector", "port", "index",
+                                     "ws", "url_sub"}
     fr2 = mcp_mod.TOOLS["ashot_frames"]["inputSchema"]
-    assert set(fr2["properties"]) == {"port", "index", "ws"}
+    assert set(fr2["properties"]) == {"port", "index", "ws", "url_sub"}
     for nm, req, props in (
             ("ashot_cdp_key", ["key"],
-             {"key", "text", "modifiers", "port", "index", "ws"}),
+             {"key", "text", "modifiers", "port", "index", "ws", "url_sub"}),
             ("ashot_cdp_wheel", [],
-             {"dx", "dy", "x", "y", "port", "index", "ws"}),
+             {"dx", "dy", "x", "y", "port", "index", "ws", "url_sub"}),
             ("ashot_cdp_click", ["x", "y"],
              {"x", "y", "button", "human", "seed", "port", "index", "ws",
               "timing", "verify", "from_x", "from_y", "activate", "url_sub"}),
@@ -3148,3 +3149,15 @@ def test_cdp_type_handler_v072(monkeypatch):
     assert rec["dispatched"] == 1
     assert rec["per_event_ms"] == 20.0
     assert "slow_ack" not in rec
+
+
+def test_cdp_tabs_url_sub_filter(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import mcp as mcp_mod
+    import json as _json
+    monkeypatch.setattr(cdp_mod, "tabs", lambda port: [
+        {"id": "1", "title": "A", "url": "https://a/"},
+        {"id": "2", "title": "B", "url": "https://b/search?q=x"}])
+    rec = _json.loads(mcp_mod._cdp_tabs(port=1, url_sub="b/search"))
+    assert [t["id"] for t in rec["tabs"]] == ["2"]
+    assert rec["filter"] == "b/search"

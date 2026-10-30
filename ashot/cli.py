@@ -493,6 +493,9 @@ def _cmd_cdp_tabs(a):
                     print("== port %s ==" % p)   # 表头进 stdout（消费方可对号）
                     try:
                         for t in cdp.tabs(p):
+                            if getattr(a, "url_sub", None) and \
+                                    a.url_sub not in (t.get("url") or ""):
+                                continue
                             print("%s\t%s\t%s"
                                   % (t["id"][:8], t["title"], t["url"]))
                     except Exception as e:  # noqa: BLE001
@@ -501,6 +504,9 @@ def _cmd_cdp_tabs(a):
             print("discovered port: %d" % ports[0], file=sys.stderr)
         port = a.port if a.port is not None else ports[0]
         for t in cdp.tabs(port):
+            if getattr(a, "url_sub", None) and \
+                    a.url_sub not in (t.get("url") or ""):
+                continue
             print("%s\t%s\t%s" % (t["id"][:8], t["title"], t["url"]))
         return 0
     except Exception as e:  # noqa: BLE001
@@ -991,6 +997,8 @@ def main(argv=None):
     ct = sub.add_parser("cdp-tabs", help="列 CDP 浏览器的 page 标签页（v0.2.0）")
     ct.add_argument("--port", type=int, default=None,
                     help="调试端口（缺省=discover 自动发现）")
+    ct.add_argument("--url-sub", dest="url_sub", default=None,
+                    help="只列 URL 含该子串的页签（v0.7.3）")
     ct.set_defaults(func=_cmd_cdp_tabs)
 
     cs = sub.add_parser("cdp-shot", help="CDP 浏览器标签页截图（无头/有头通吃，v0.2.0）")

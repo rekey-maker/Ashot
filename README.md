@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.7.2**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.7.3**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
 
 > **画图定位精度（实测 2026-10-29）**：桌面 rect 与浏览器 selector/ref
 > 画框的坐标误差都是 **0px**；可见的 ±2px 是描边线宽的一半。详见文末
@@ -161,7 +161,7 @@ python -m pytest tests/ -q          # 185 项（E2E 默认 skip）
 $env:ASHOT_E2E=1; python -m pytest tests/test_browser_e2e.py -q   # 真浏览器 6 项
 ```
 
-191 项（+6 项可选 E2E）：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
+192 项（+6 项可选 E2E）：编码/解码 roundtrip、全部标注原语、箭头几何比例与多边形简单性、
 GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收据契约
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
@@ -223,7 +223,7 @@ ashot/
 ├── fonts.py / show.py / mcp.py / cli.py / _coerce.py
 ├── docs/design/                # 设计文档（按版本）
 ├── docs/review/                # 审查/核查报告
-├── tests/test_ashot.py         # 142 项（主回归锁）
+├── tests/test_ashot.py         # 143 项（主回归锁）
 ├── tests/test_transform.py     # 30 项（裁切/缩放/JPEG）
 └── tests/test_shapes.py        # 19 项（曲线/弧线/折线）
 ```

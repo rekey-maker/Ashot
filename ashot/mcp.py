@@ -160,7 +160,7 @@ def _screens():
 
 def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
               max_side=0, dpr=0.0, port=None, index=0, ws=None,
-              space="viewport"):
+              space="viewport", url_sub=None):
     """对既有 PNG/JPEG 标注：ops=JSON 数组，kind ∈ rect/ellipse/arrow/line/
     **v0.4.1 新增 curve(三次贝塞尔 x0,y0,c1x,c1y,c2x,c2y,x1,y1)/
     arc(x,y,w,h,start,sweep 度、顺时针)/polyline(points 或 coords)**——
@@ -196,7 +196,7 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     ops_list = json.loads(ops) if isinstance(ops, str) else ops
     if any(isinstance(o, dict) and (o.get("selector") or o.get("ref"))
            for o in (ops_list or [])):
-        ws_url = _resolve_ws(port, index, ws)
+        ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
         refs = _LAST_REFS.get("refs") if _LAST_REFS.get("ws") == ws_url else None
         if refs and _LAST_REFS.get("url"):
             cur = cdp.call(ws_url, "Runtime.evaluate",
@@ -362,7 +362,7 @@ def _show(image, title, out_dir, caption=None, width=1200):
                       ensure_ascii=False)
 
 
-def _cdp_tabs(port=None):
+def _cdp_tabs(port=None, url_sub=None):
     """列 CDP 浏览器（Chromium 家族）的 page 标签页（v0.2.0）。port=
     调试端口（缺省=discover：进程命令行→DevToolsActivePort→常见端口，
     审计 P1-2）。无头/有头通吃、与 AI 宿主无关。
@@ -376,7 +376,10 @@ def _cdp_tabs(port=None):
             groups = []
             for p in disc["ports"]:
                 try:
-                    groups.append({"port": int(p), "tabs": cdp.tabs(int(p))})
+                    ts = cdp.tabs(int(p))
+                    if url_sub:
+                        ts = [t for t in ts if url_sub in (t.get("url") or "")]
+                    groups.append({"port": int(p), "tabs": ts})
                 except Exception as e:  # noqa: BLE001 —— 单个读失败如实标记
                     groups.append({"port": int(p), "error":
                                    "%s: %s" % (type(e).__name__,
@@ -387,8 +390,11 @@ def _cdp_tabs(port=None):
                                "hint": "多实例：下一步操作请显式带 --port"},
                               ensure_ascii=False)
         port = disc["ports"][0]
-    return json.dumps({"ok": True, "port": int(port),
-                       "tabs": cdp.tabs(int(port))}, ensure_ascii=False)
+    ts = cdp.tabs(int(port))
+    if url_sub:
+        ts = [t for t in ts if url_sub in (t.get("url") or "")]
+    return json.dumps({"ok": True, "port": int(port), "tabs": ts,
+                       "filter": url_sub}, ensure_ascii=False)
 
 
 def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
@@ -538,13 +544,14 @@ def _snapshot(port=None, index=0, ws=None, max_nodes=150, root=None,
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
+def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None,
+             url_sub=None):
     """CDP 按键/组合键/文本注入（v0.2.0 §4.2.2）：key=键名（a/enter/
     tab/arrowup/s…）；modifiers=组合键 "ctrl+shift"（位掩码
     Alt1/Ctrl2/Meta4/Shift8）；text=覆盖产生的文本（如中文）。可见
     字符 rawKeyDown+char 双发，控制键 keyDown+keyUp。返回
     {ok, dispatched}。需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     mods = modifiers if isinstance(modifiers, int) else (modifiers or 0)
     seq = cdp.key_events(key, mods, text=text)
     n, unresolved = cdp.dispatch(ws_url, seq)
@@ -554,10 +561,11 @@ def _cdp_key(key, text=None, modifiers=None, port=None, index=0, ws=None):
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
+def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None,
+                url_sub=None):
     """CDP 鼠标滚轮（v0.2.0）：dy 正=向下滚动，dx 横向；x/y=事件坐标
     （CSS 像素）。返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     ev = {"type": "mouseWheel", "x": int(x), "y": int(y),
           "deltaX": int(dx), "deltaY": int(dy), "modifiers": 0}
     n, _ = cdp.dispatch(ws_url, [ev])
@@ -821,15 +829,16 @@ def _element(selector, port=None, index=0, ws=None, scroll=False,
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _frames(port=None, index=0, ws=None):
+def _frames(port=None, index=0, ws=None, url_sub=None):
     """frame 树（v0.2.7）：id/url/name/parent_id/depth，尽力附 iframe
     自身矩形（跨站 OOPIF 拿不到就留空）。收据 {ok, frames:[...]}。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     return json.dumps({"ok": True, "frames": dom.frames(ws_url)},
                       ensure_ascii=False)
 
 
-def _frame_element(iframe, selector, port=None, index=0, ws=None):
+def _frame_element(iframe, selector, port=None, index=0, ws=None,
+                   url_sub=None):
     """iframe 内元素 → 主页面视口 CSS 矩形（v0.2.7）。iframe=选择器字符串
     （单层）或 JSON 数组（同源嵌套）；同源走 JS 递归，同进程跨域走
     createIsolatedWorld，跨站 OOPIF 如实报 oopif_unsupported。"""
