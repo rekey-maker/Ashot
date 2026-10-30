@@ -426,7 +426,8 @@ def _cmd_snapshot(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
-        rec = dom.snapshot(ws, max_nodes=int(a.max_nodes or 150))
+        rec = dom.snapshot(ws, max_nodes=int(a.max_nodes or 150),
+                           root=getattr(a, "root", None) or None)
         rec["ok"] = True
         print(json.dumps(rec, ensure_ascii=False))
         return 0
@@ -514,14 +515,17 @@ def _cmd_cdp_shot(a):
             print("⚠ %s" % w, file=sys.stderr)
         png, meta = cdp.shot(port, index=a.index,
                              fullpage=not a.viewport,
-                             stitch=not getattr(a, "no_stitch", False))
+                             stitch=not getattr(a, "no_stitch", False),
+                             activate_hidden=not getattr(a, "no_activate", False),
+                             url_sub=getattr(a, "url_sub", None))
         path = output.save(png, out=a.out)
         print(path)
         # v0.2.6 Q22：换算依据不能只给 MCP——CLI 同样输出坐标语义
         print("fullpage: %s" % meta["fullpage"], file=sys.stderr)
         for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
                   "scroll_y", "fullpage_truncated", "stitched", "shots",
-                  "stitch_error", "fixed_hidden"):
+                  "stitch_error", "fixed_hidden", "page_visibility",
+                  "activated", "frame_stale_risk"):
             if k in meta:
                 print("%s: %s" % (k, meta[k]), file=sys.stderr)
         if meta.get("hint"):
@@ -554,7 +558,8 @@ def _resolve_cdp_ws(a):
              (" process=%s" % info["process"]) if info.get("process") else "",
              (" | %s" % tgt.get("title")) if tgt.get("title") else ""),
           file=sys.stderr)
-    return cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0))
+    return cdp.ws_for(int(port), index=int(getattr(a, "index", 0) or 0),
+                      url_sub=getattr(a, "url_sub", None))
 
 
 def _cmd_cdp_key(a):
@@ -602,14 +607,29 @@ def _cmd_cdp_click(a):
         start = ((getattr(a, "from_x", None), getattr(a, "from_y", None))
                  if getattr(a, "from_x", None) is not None
                  and getattr(a, "from_y", None) is not None else None)
+        vis = cdp.page_visibility(ws)
+        activated = False
+        if vis == "hidden" and not getattr(a, "no_activate", False):
+            cdp.activate(ws)
+            activated = True
         seq = cdp.click_events(a.x, a.y, button=a.button,
                                human=not a.teleport, seed=a.seed,
                                start=start)
+        stats = {}
         t0 = time.time()
         n, _ = cdp.dispatch(ws, seq,
-                            realtime=not getattr(a, "no_timing", False))
+                            realtime=not getattr(a, "no_timing", False),
+                            stats=stats)
         print("dispatched: %d" % n)
         print("seconds: %.2f" % (time.time() - t0))
+        for k in ("planned_ms", "dispatch_ms", "max_event_ms"):
+            if k in stats:
+                print("%s: %s" % (k, stats[k]))
+        if stats.get("max_event_ms", 0) > 2000:
+            print("⚠ slow_ack: 单事件 >2s（后台/忙页可能拖慢 Input ACK）",
+                  file=sys.stderr)
+        if activated:
+            print("page_visibility: hidden → activated", file=sys.stderr)
         if getattr(a, "verify", ""):
             try:
                 r = cdp.evaluate(ws, a.verify)
@@ -632,6 +652,11 @@ def _cmd_cdp_drag(a):
         ws = _resolve_cdp_ws(a)
         if not ws:
             return 1
+        vis = cdp.page_visibility(ws)
+        activated = False
+        if vis == "hidden" and not getattr(a, "no_activate", False):
+            cdp.activate(ws)
+            activated = True
         seq = cdp.drag_events(
             a.x1, a.y1, a.x2, a.y2,
             steps=a.steps, button=a.button, human=not a.teleport,
@@ -650,11 +675,17 @@ def _cmd_cdp_drag(a):
         print("pace: %s  constrained: %s"
               % (getattr(a, "pace", "normal") or "normal",
                  not getattr(a, "free", False)))
-        if stats.get("planned_ms"):
-            print("planned_ms: %s" % stats["planned_ms"])
+        for k in ("planned_ms", "dispatch_ms", "max_event_ms"):
+            if k in stats:
+                print("%s: %s" % (k, stats[k]))
         if stats.get("clipped_ms"):
             print("clipped_ms: %s  ⚠ 等待被 3s 上限夹断"
                   % stats["clipped_ms"])
+        if stats.get("max_event_ms", 0) > 2000:
+            print("⚠ slow_ack: 单事件 >2s（后台/忙页可能拖慢 Input ACK）",
+                  file=sys.stderr)
+        if activated:
+            print("page_visibility: hidden → activated", file=sys.stderr)
         if getattr(a, "verify", ""):
             try:
                 r = cdp.evaluate(ws, a.verify)
@@ -954,6 +985,8 @@ def main(argv=None):
                     help="只抓视口（缺省 captureBeyondViewport 全页）")
     cs.add_argument("--no-stitch", dest="no_stitch", action="store_true",
                     help="超长页（>16384px）不滚动拼接，按单张上限如实报错")
+    cs.add_argument("--no-activate", dest="no_activate", action="store_true",
+                    help="后台标签页不自动 bringToFront（会旧帧/超时）")
     cs.add_argument("--out", default=None, help="输出路径（缺省 ~/Ashot/shots）")
     cs.set_defaults(func=_cmd_cdp_shot)
 
@@ -963,6 +996,8 @@ def main(argv=None):
         p.add_argument("--index", type=int, default=0, help="第几个 page 标签")
         p.add_argument("--ws", default=None,
                        help="直接给 page 级 ws url（优先于 port/index）")
+        p.add_argument("--url-sub", dest="url_sub", default=None,
+                       help="按 URL 子串选页（比 index 稳；v0.7.0）")
 
     inf = sub.add_parser("info", help="图片信息（PNG/JPEG 的尺寸/格式/体积，v0.5.0）")
     inf.add_argument("image", help="图片路径")
@@ -992,7 +1027,10 @@ def main(argv=None):
 
     snp = sub.add_parser("snapshot",
                          help="页面结构快照（ref+box，不靠像素猜坐标，v0.6.0）")
-    snp.add_argument("--max-nodes", dest="max_nodes", type=int, default=150)
+    snp.add_argument("--max-nodes", dest="max_nodes", type=int, default=150,
+                     help="最多多少个 ref（结构节点另有 4× 上限）")
+    snp.add_argument("--root", default=None,
+                     help="只扫描该 CSS 选择器的子树（如 #search-content）")
     _add_common(snp)
     snp.set_defaults(func=_cmd_snapshot)
 
@@ -1040,6 +1078,8 @@ def main(argv=None):
                          "不再恒从左上角出发）")
     cc.add_argument("--from-y", dest="from_y", type=int, default=None,
                     help="接近轨迹起点 y")
+    cc.add_argument("--no-activate", dest="no_activate", action="store_true",
+                    help="后台标签页不自动 bringToFront")
     cc.add_argument("--verify", default="",
                     help="点完后立刻求值的一段 JS，结果进收据"
                          "（如 \"return document.title\"）——dispatched "
@@ -1075,6 +1115,8 @@ def main(argv=None):
                     help="受约束模式下允许的垂直抖动上限（CSS 像素）")
     cd.add_argument("--no-timing", dest="no_timing", action="store_true",
                     help="关掉节奏等待（全速派发）")
+    cd.add_argument("--no-activate", dest="no_activate", action="store_true",
+                    help="后台标签页不自动 bringToFront")
     cd.add_argument("--verify", default="",
                     help="拖完后立刻求值的一段 JS，结果进收据"
                          "（如 \"return document.title\"）")

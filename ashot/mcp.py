@@ -392,7 +392,7 @@ def _cdp_tabs(port=None):
 
 
 def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
-              stitch=True):
+              stitch=True, activate=True, url_sub=None):
     """CDP 浏览器标签页截图（v0.2.0）：Page.captureScreenshot，
     无头/有头通吃、与 AI 宿主无关（设计文档 v0.2.0 §4.2）。port 缺省
     =discover；index=第几个 page 标签；fullpage=captureBeyondViewport
@@ -403,15 +403,17 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
     CSS 坐标）与 coord_space（viewport/document——全页截图是文档坐标，
     点首屏以下要先减 scrollY，v0.2.6 Q06）。preview 缺省 true（Q16）。
     本工具需宿主重连后才会出现在工具表。"""
-    ws_url = _resolve_ws(port, index)
+    ws_url = _resolve_ws(port, index, url_sub=url_sub)
     png, info = cdp.shot(None, ws=ws_url,
                          fullpage=as_bool(fullpage, True),
-                         stitch=as_bool(stitch, True))
+                         stitch=as_bool(stitch, True),
+                         activate_hidden=as_bool(activate, True))
     path = output.save(png, out=out)
     rec = {"ok": True, "path": path}
     for k in ("w", "h", "vw", "vh", "dpr", "to_css", "coord_space",
               "scroll_y", "hint", "fullpage", "fullpage_truncated",
-              "stitched", "shots", "stitch_error", "fixed_hidden"):
+              "stitched", "shots", "stitch_error", "fixed_hidden",
+              "page_visibility", "activated", "frame_stale_risk"):
         if k in info:
             rec[k] = info[k]
     if as_bool(preview):
@@ -426,13 +428,13 @@ def _cdp_shot(port=None, index=0, fullpage=True, out=None, preview=True,
     return json.dumps(rec, ensure_ascii=False)
 
 
-def _cdp_view(port=None, index=0, ws=None, timeout=15):
+def _cdp_view(port=None, index=0, ws=None, timeout=15, url_sub=None):
     """CDP 标签页视口信息（v0.2.5）：vw/vh = CSS 像素视口尺寸，
     dpr = devicePixelRatio，content_w/h = **document** 内容尺寸
     （不代表内部滚动容器；v0.6.2 起 `scrollables` 列出真正可滚的容器：
     tag/id/selector/rect/overflow/scroll_top/scroll_h/client_h）。
     截图出图是物理像素（= CSS × dpr），直接拿截图坐标去点击必然落空。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     lay, dpr = cdp.layout(ws_url, timeout=int(timeout or 15),
                           include_scrollables=True)
     rec = {"ok": True, "vw": lay["vw"], "vh": lay["vh"],
@@ -453,14 +455,14 @@ def _cdp_view(port=None, index=0, ws=None, timeout=15):
 
 
 def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
-              timeout=30):
+              timeout=30, url_sub=None):
     """在 CDP 标签页里跑一段 JS 并取值（v0.2.5）。js 可写函数体（内部
     return）或表达式。用途：算坐标、读页面状态确认操作生效、拿 dpr。
     **只发 Runtime.evaluate，绝不发 Runtime.enable**（字节系检测点，
     一发即杀实例）。收据 {ok, value, value_type, exception}——异常如实
     带出不静默；value_type 区分 null / undefined / 不可序列化对象
     （v0.2.6 Q14：三者旧收据同形 None）。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
     res = cdp.evaluate(ws_url, js, timeout=as_int(timeout, 30),
                        await_promise=as_bool(await_promise))
     exc = res.get("exceptionDetails")
@@ -487,7 +489,7 @@ def _cdp_eval(js, port=None, index=0, ws=None, await_promise=False,
 _LAST_TARGET = {}   # 最近一次解析出的目标身份（收据盖章用，stdio 单线程）
 
 
-def _resolve_ws(port, index=0, ws=None, allow_multi=False):
+def _resolve_ws(port, index=0, ws=None, allow_multi=False, url_sub=None):
     """cdp 工具公共解析：-> page ws，并记录目标身份（v0.2.6 Q04）。
 
     安全边界：discover 多实例时输入类动作**必须显式 --port**；单实例
@@ -502,19 +504,23 @@ def _resolve_ws(port, index=0, ws=None, allow_multi=False):
     info.update({k: v for k, v in cdp.target_info(p, index).items()
                  if k != "port"})
     _LAST_TARGET.update(info)   # 就地更新（与 _serve 的 clear 同一对象）
-    return cdp.ws_for(p, index=int(index or 0))
+    return cdp.ws_for(p, index=int(index or 0), url_sub=url_sub)
 
 
 _LAST_REFS = {}   # 最近一次 snapshot 的 {ws, refs}（stdio 单线程，够用）
 
 
-def _snapshot(port=None, index=0, ws=None, max_nodes=150):
+def _snapshot(port=None, index=0, ws=None, max_nodes=150, root=None,
+              url_sub=None):
     """页面结构快照（v0.6.0）：返回 text 树 + ref 映射（eN → CSS 选择器 /
     矩形），Playwright MCP 同思路——**用结构化元素代替像素猜坐标**。
-    收据 {ok, tree, refs, count, url, title, dpr, scroll}；ref 可用于
+    收据 {ok, tree, refs, count, truncated, truncated_at, url, title,
+    dpr, scroll}；`root` 可把扫描限定到子树（如 "#search-content"），
+    `max_nodes` 只限制 **ref 数**（结构节点另有 4× 上限）；ref 可用于
     `ashot_annotate` 的 ops（`{"kind":"rect","ref":"e5"}`）与 selector。"""
-    ws_url = _resolve_ws(port, index, ws)
-    rec = dom.snapshot(ws_url, max_nodes=int(max_nodes or 150))
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
+    rec = dom.snapshot(ws_url, max_nodes=int(max_nodes or 150),
+                       root=root or None)
     _LAST_REFS.clear()
     _LAST_REFS.update({"ws": ws_url, "refs": rec.get("refs") or {},
                        "url": rec.get("url"), "scroll": rec.get("scroll")})
@@ -550,7 +556,7 @@ def _cdp_wheel(dx=0, dy=600, x=100, y=100, port=None, index=0, ws=None):
 
 def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
                index=0, ws=None, timing=True, verify="",
-               from_x=None, from_y=None):
+               from_x=None, from_y=None, activate=True, url_sub=None):
     """CDP 鼠标单击（v0.2.0/0.2.4）：x/y=CSS 像素；button=left/right/
     middle；human=True（缺省）先沿人类化贝塞尔轨迹移动到位（带微抖动、
     有节奏地靠近），timing=false 或 --teleport 可退回瞬移（批处理时省掉
@@ -560,17 +566,35 @@ def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
     verify=一段 JS（可选）：点完立刻求值，结果进收据 verify 字段——
     **dispatched 只说明事件发出去了，不说明生效**（v0.2.5 诚实化）。
     返回 {ok, dispatched}。需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
+    vis = cdp.page_visibility(ws_url)
+    activated = False
+    if vis == "hidden" and as_bool(activate, True):
+        cdp.activate(ws_url)
+        activated = True
     start = (from_x, from_y) if (from_x is not None and
                                  from_y is not None) else None
     seq = cdp.click_events(int(x), int(y), button=button,
                            human=as_bool(human, True),
                            seed=int(seed) if seed not in (None, "") else None,
                            start=start)
+    stats = {}
     t0 = time.time()
-    n, _ = cdp.dispatch(ws_url, seq, realtime=as_bool(timing, True))
+    n, _ = cdp.dispatch(ws_url, seq, realtime=as_bool(timing, True),
+                        stats=stats)
     rec = {"ok": True, "dispatched": n,
            "seconds": round(time.time() - t0, 2)}
+    for k in ("planned_ms", "slept_ms", "dispatch_ms", "max_event_ms"):
+        if k in stats:
+            rec[k] = stats[k]
+    if n:
+        rec["per_event_ms"] = round(stats.get("dispatch_ms", 0) / n, 1)
+    if stats.get("max_event_ms", 0) > 2000:
+        rec["slow_ack"] = True
+    if activated:
+        rec["activated"] = True
+    if vis:
+        rec["page_visibility"] = vis
     if verify:
         try:
             r = cdp.evaluate(ws_url, verify)
@@ -586,7 +610,7 @@ def _cdp_click(x, y, button="left", human=True, seed=None, port=None,
 def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
               seed=None, port=None, index=0, ws=None, pace="normal",
               total_ms=None, constrained=True, max_perp=2.5,
-              timing=True, verify=""):
+              timing=True, verify="", activate=True, url_sub=None):
     """CDP 鼠标拖拽（v0.2.4/0.2.5）：按下 → 节奏化移动 → 末端过冲回退
     → 松手。**v0.6.2：原生 `<input type=range>` 可拖**（按压后的 move 带
     button=left，实测 value 8→82；自定义 div 滑块不受影响）。
@@ -603,7 +627,12 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
     verify=一段 JS（可选）：拖完立刻求值，结果进收据——用来确认真的拖到了。
 
     返回 {ok, dispatched, seconds, pace, constrained}。需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
+    vis = cdp.page_visibility(ws_url)
+    activated = False
+    if vis == "hidden" and as_bool(activate, True):
+        cdp.activate(ws_url)
+        activated = True
     seq = cdp.drag_events(
         x1, y1, x2, y2,
             steps=int(steps) if steps not in (None, "", 0) else 0,
@@ -624,10 +653,17 @@ def _cdp_drag(x1, y1, x2, y2, steps=0, button="left", human=True,
            "timing": as_bool(timing, True),
            "constrained": as_bool(constrained, True),
            "max_perp": float(max_perp or 2.5)}
-    if stats.get("planned_ms"):
-        rec["planned_ms"] = stats["planned_ms"]
-    if stats.get("clipped_ms"):
-        rec["clipped_ms"] = stats["clipped_ms"]
+    for k in ("planned_ms", "slept_ms", "dispatch_ms", "max_event_ms"):
+        if k in stats:
+            rec[k] = stats[k]
+    if n:
+        rec["per_event_ms"] = round(stats.get("dispatch_ms", 0) / n, 1)
+    if stats.get("max_event_ms", 0) > 2000:
+        rec["slow_ack"] = True
+    if activated:
+        rec["activated"] = True
+    if vis:
+        rec["page_visibility"] = vis
         rec["hint"] = "等待被 3s 上限夹断，实际节奏比请求慢档短"
     if verify:
         try:
@@ -647,7 +683,12 @@ def _cdp_dblclick(x, y, button="left", count=2, human=True, seed=None,
     合成 dblclick 事件；human=True（缺省）先人类化轨迹到位。x/y=CSS
     像素；from_x/from_y 可选起点（v0.2.6 Q12）。返回 {ok, dispatched}。
     需宿主重连出现。"""
-    ws_url = _resolve_ws(port, index, ws)
+    ws_url = _resolve_ws(port, index, ws, url_sub=url_sub)
+    vis = cdp.page_visibility(ws_url)
+    activated = False
+    if vis == "hidden" and as_bool(activate, True):
+        cdp.activate(ws_url)
+        activated = True
     start = (from_x, from_y) if (from_x is not None and
                                  from_y is not None) else None
     seq = cdp.dblclick_events(x, y, button=button, count=int(count or 2),

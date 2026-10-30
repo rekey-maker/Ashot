@@ -989,6 +989,8 @@ def dispatch(ws_url, events, timeout=30, realtime=True, stats=None):
     planned = 0.0
     slept = 0.0
     clipped = 0.0
+    dispatch_ms = 0.0
+    max_event_ms = 0.0
     with Session(ws_url, timeout) as s:
         for raw in events:
             # 拷贝后再剥元信息：**就地 pop 会吃掉调用方的数据**，同一
@@ -1006,24 +1008,37 @@ def dispatch(ws_url, events, timeout=30, realtime=True, stats=None):
                 time.sleep(d / 1000.0)
                 slept += d
             t = ev.get("type")
+            _t0 = time.time()
             if t == "insertText":
                 s.command("Input.insertText", {"text": ev.get("text", "")})
             elif t in _KEY_TYPES:
                 s.command("Input.dispatchKeyEvent", ev)
             else:
                 s.command("Input.dispatchMouseEvent", ev)
+            _dt = (time.time() - _t0) * 1000.0
+            dispatch_ms += _dt
+            max_event_ms = max(max_event_ms, _dt)
             n += 1
     if isinstance(stats, dict):
         stats["planned_ms"] = round(planned, 1)
         stats["slept_ms"] = round(slept, 1)
         stats["clipped_ms"] = round(clipped, 1)
+        stats["events"] = n
+        stats["dispatch_ms"] = round(dispatch_ms, 1)
+        stats["max_event_ms"] = round(max_event_ms, 1)
     return n, unresolved
 
 
-def ws_for(port, index=0):
-    """端口 -> 第 index 个 page 标签的 ws（tabs+过滤的公共化）。"""
+def ws_for(port, index=0, url_sub=None):
+    """端口 -> page 标签的 ws。url_sub 给了就按 URL 子串过滤（取第一个），
+    v0.7.0：index 会因新开页整体位移，批处理优先用 url_sub。"""
     pages = [t for t in tabs(port)
              if not t["url"].startswith(("devtools://", "chrome://"))]
+    if url_sub:
+        pages = [t for t in pages if url_sub in (t.get("url") or "")]
+        if not pages:
+            raise RuntimeError("没有 URL 含 %r 的 page 标签页" % (url_sub,))
+        return pages[0]["ws"]
     if not pages:
         raise RuntimeError("该端口没有可操作的 page 标签页")
     return pages[max(0, min(int(index), len(pages) - 1))]["ws"]
@@ -1414,8 +1429,26 @@ def _stitch_fullpage(ws, lay, dpr, max_pixels=_STITCH_MAX_PIXELS, timeout=30):
     return png, info
 
 
+def page_visibility(ws, timeout=5):
+    """'visible'/'hidden'/'prerender'；取不到返回 None（不阻塞主流程）。"""
+    try:
+        r = call(ws, "Runtime.evaluate", {
+            "expression": "document.visibilityState", "returnByValue": True},
+            timeout)
+        return (r.get("result") or {}).get("value")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def activate(ws, timeout=5):
+    """把标签页带到前台（Page.bringToFront）。后台页截图会拿旧帧/超时；
+    点击的每条 Input ACK 也可能被拖到秒级——前台化是可靠解法。"""
+    call(ws, "Page.bringToFront", {}, timeout)
+    return True
+
+
 def shot(port, ws=None, index=0, fullpage=True, stitch=True,
-         max_pixels=_STITCH_MAX_PIXELS):
+         max_pixels=_STITCH_MAX_PIXELS, activate_hidden=True, url_sub=None):
     """对第 index 个 page 标签截图 -> (png_bytes, info)。
 
     fullpage=captureBeyondViewport（Chrome 90+，视口外也截）。
@@ -1431,9 +1464,24 @@ def shot(port, ws=None, index=0, fullpage=True, stitch=True,
                  if not t["url"].startswith(("devtools://", "chrome://"))]
         if not pages:
             raise RuntimeError("该端口没有可截的 page 标签页")
-        ws = pages[max(0, min(int(index), len(pages) - 1))]["ws"]
+        if url_sub:
+            pages = [t for t in pages if url_sub in (t.get("url") or "")]
+            if not pages:
+                raise RuntimeError("没有 URL 含 %r 的 page 标签页" % (url_sub,))
+        ws = pages[0]["ws"] if url_sub else pages[max(0, min(int(index), len(pages) - 1))]["ws"]
     if not ws:
         raise RuntimeError("目标标签页缺 webSocketDebuggerUrl")
+    vis = page_visibility(ws)
+    activated = False
+    if vis == "hidden":
+        # v0.7.0：后台页 captureScreenshot 会返回旧帧或直接超时
+        # （实测 headless：hidden 25s 超时；headed：返回上一帧）。
+        if not activate_hidden:
+            raise RuntimeError(
+                "目标标签页在后台（visibilityState=hidden），截图会旧帧或超时；"
+                "传 activate_hidden=True（或先把标签页切到前台）")
+        activate(ws)
+        activated = True
     lay = dpr = None
     if fullpage:
         try:
@@ -1458,6 +1506,13 @@ def shot(port, ws=None, index=0, fullpage=True, stitch=True,
                            % (list(res),))
     png = base64.b64decode(data)
     info = {"ws": ws, "fullpage": bool(fullpage)}
+    if vis:
+        info["page_visibility"] = vis
+    if activated:
+        info["activated"] = True
+        info["frame_stale_risk"] = False
+    elif vis == "hidden":
+        info["frame_stale_risk"] = True
     sz = png_size(png)
     if sz:
         info["w"], info["h"] = sz[0], sz[1]

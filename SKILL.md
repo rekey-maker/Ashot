@@ -221,3 +221,18 @@ MCP 只做最终验收。
   自己画框标注再交付用户）；
 - **B 形态（v0.2 预留）**：tkinter 交互画布（人手画），调了会诚实报
   Not Implemented。
+
+
+## v0.7.0 后台页/慢 ACK/快照预算（2026-10-30）
+
+- **后台标签页**：`cdp-shot`/`cdp-click`/`cdp-drag` 会先查
+  `document.visibilityState`；hidden 时自动 `Page.bringToFront` 再动作，
+  收据带 `activated`/`page_visibility`/`frame_stale_risk`。不想切 tab 用
+  `--no-activate`（截图会直接报错，不交旧帧）。
+- **慢 ACK**：click/drag 收据新增 `planned_ms`/`dispatch_ms`/
+  `max_event_ms`/`per_event_ms`；单事件 >2s 标 `slow_ack`。
+- **snapshot**：`--root "#search-content"` 只扫子树；`max_nodes` 只数 ref
+  （结构节点另有 4× 上限）；截断带 `truncated_at{refs,nodes,depth,
+  last_selector}`。卡片列表先给 root。
+- **选页**：CLI 全部 cdp-* 支持 `--url-sub`；MCP 的 shot/click/drag/eval/
+  snapshot/view 支持 `url_sub`（index 会因新开页位移，别再依赖）。

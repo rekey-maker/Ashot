@@ -434,13 +434,15 @@ def test_mcp_tool_schemas():
                                   "ashot_cdp_eval", "ashot_crop",
                                   "ashot_resize"}
     for nm, props in (
-            ("ashot_cdp_click", {"x", "y", "button", "human", "seed",
+            ("ashot_cdp_click", {"x", "y", "button", "human", "seed", "activate",
+                         "url_sub",
                                  "port", "index", "ws", "timing",
                                  "verify", "from_x", "from_y"}),
             ("ashot_cdp_drag", {"x1", "y1", "x2", "y2", "steps", "button",
                                 "human", "seed", "port", "index", "ws",
-                                          "pace", "total_ms", "constrained",
-                                          "max_perp", "timing", "verify"}),
+                                "pace", "total_ms", "constrained",
+                                "max_perp", "timing", "verify", "activate",
+                                "url_sub"}),
             ("ashot_cdp_dblclick", {"x", "y", "button", "count", "human",
                                     "seed", "port", "index", "ws",
                                     "from_x", "from_y"})):
@@ -493,8 +495,8 @@ def test_mcp_tool_schemas():
     cs = mcp_mod.TOOLS["ashot_cdp_shot"]["inputSchema"]
     assert cs["required"] == []
     assert set(cs["properties"]) == {"port", "index", "fullpage", "out",
-                                     "stitch",
-                                     "preview"}
+                                     "stitch", "preview", "activate",
+                                     "url_sub"}
     db = mcp_mod.TOOLS["ashot_cdp_dblclick"]["inputSchema"]
     assert db["required"] == ["x", "y"]
     assert set(db["properties"]) == {"x", "y", "button", "count", "human",
@@ -531,11 +533,11 @@ def test_mcp_tool_schemas():
              {"dx", "dy", "x", "y", "port", "index", "ws"}),
             ("ashot_cdp_click", ["x", "y"],
              {"x", "y", "button", "human", "seed", "port", "index", "ws",
-              "timing", "verify", "from_x", "from_y"}),
+              "timing", "verify", "from_x", "from_y", "activate", "url_sub"}),
             ("ashot_cdp_drag", ["x1", "y1", "x2", "y2"],
              {"x1", "y1", "x2", "y2", "steps", "button", "human", "seed",
               "port", "index", "ws", "pace", "total_ms", "constrained",
-              "max_perp", "timing", "verify"})):
+              "max_perp", "timing", "verify", "activate", "url_sub"})):
         ic = mcp_mod.TOOLS[nm]["inputSchema"]
         assert ic["required"] == req, (nm, ic["required"])
         assert set(ic["properties"]) == props, nm
@@ -3020,3 +3022,58 @@ def test_tool_descriptions_v063():
     assert "pad" in ann and "白名单" in ann
     drag = mcp_mod.TOOLS["ashot_cdp_drag"]["description"]
     assert "range" in drag
+
+
+def test_ws_for_url_sub(monkeypatch):
+    """url_sub 按 URL 选页，比 index 稳（v0.7.0）。"""
+    from ashot import cdp as cdp_mod
+    monkeypatch.setattr(cdp_mod, "tabs", lambda port: [
+        {"url": "https://a/", "ws": "wa"},
+        {"url": "https://b/search?q=x", "ws": "wb"}])
+    assert cdp_mod.ws_for(1, index=0, url_sub="b/search") == "wb"
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError):
+        cdp_mod.ws_for(1, url_sub="nope")
+
+
+def test_dispatch_stats(monkeypatch):
+    """dispatch 必须回报 events/dispatch_ms/max_event_ms（定位 40s 问题）。"""
+    from ashot import cdp as cdp_mod
+
+    class FakeSession:
+        def __init__(self, ws, timeout=30):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def command(self, method, params=None):
+            return {}
+
+    monkeypatch.setattr(cdp_mod, "Session", FakeSession)
+    stats = {}
+    n, _ = cdp_mod.dispatch("ws", [{"type": "mouseMoved", "x": 1, "y": 2},
+                                   {"type": "mousePressed", "x": 1, "y": 2}],
+                            realtime=False, stats=stats)
+    assert n == 2
+    assert stats["events"] == 2
+    assert "dispatch_ms" in stats and "max_event_ms" in stats
+
+
+def test_snapshot_truncated_at(monkeypatch):
+    from ashot import cdp as cdp_mod
+    from ashot import dom
+    payload = {"tree": {"role": "body", "name": "", "kids": [],
+                        "ref": None, "box": None},
+               "refs": {}, "count": 0, "truncated": True,
+               "truncated_at": {"refs": 0, "nodes": 12, "depth": 12,
+                                "last_selector": "body > div"},
+               "url": "https://x/", "title": "t", "dpr": 1, "scroll": [0, 0]}
+    monkeypatch.setattr(cdp_mod, "call",
+                        lambda *a, **k: {"result": {"value": payload}})
+    rec = dom.snapshot("ws://x")
+    assert rec["truncated_at"]["nodes"] == 12
+    assert rec["truncated_at"]["last_selector"] == "body > div"

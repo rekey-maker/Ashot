@@ -2,6 +2,30 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.0] - 2026-10-30
+
+### 修复（另一窗口抖音实弹反馈）
+- **后台标签页截图会旧帧/超时且无提示**：截图前查 `document.visibilityState`；
+  `hidden` 时自动 `Page.bringToFront` 再拍（实测 headless 后台页
+  `captureScreenshot` 25s 超时，前台化后 0.1s），收据新增
+  `page_visibility`/`activated`/`frame_stale_risk`；`--no-activate`
+  可拒绝自动前台化（宁可报错也不交付假图）。
+- **单次 click 40~45s 无法定位**：`dispatch` 现在回报 `events`/
+  `dispatch_ms`/`max_event_ms`；`ashot_cdp_click` 补传 stats 并输出
+  `planned_ms`/`dispatch_ms`/`per_event_ms`，单事件 >2s 标 `slow_ack`；
+  后台页点击同样自动前台化。
+- **snapshot 被页面外壳吃光预算**：新增 `root` 参数只扫子树；预算改成
+  **ref 数上限（max_nodes）+ 结构节点 4× 上限**；截断时给
+  `truncated_at: {refs, nodes, depth, last_selector}`。卡片列表不再
+  被导航/侧栏挤掉。
+- **tab index 会因新开页位移**：新增 `url_sub`（按 URL 子串选页），
+  CLI 全部 cdp-* 支持 `--url-sub`，MCP 的 shot/click/drag/eval/snapshot/
+  view 支持同参数。
+
+### 测试
+- 常规 **188 passed, 6 skipped**；`ASHOT_E2E=1` 时 **6 passed**（新增
+  后台页截图自动前台化 + DOM 变化后图确实变、snapshot root 卡片列表）。
+
 ## [0.6.4] - 2026-10-29
 
 ### 小尾巴处理（调研 + 落地）

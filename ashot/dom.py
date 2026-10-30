@@ -354,10 +354,12 @@ def _cross_origin_rect(ws, iframe_selector, selector, timeout, chain_hint):
 
 _SNAPSHOT_JS = r"""
 (() => {
-  const MAX = Math.max(1, Math.min(500, %d));
+  const MAX_REFS = Math.max(1, Math.min(500, %d));
+  const MAX_NODES = Math.max(MAX_REFS, Math.min(3000, MAX_REFS * 4));
+  const ROOT_SEL = %s;
   const MAXD = 12;
   const refs = {};
-  let emitted = 0, n = 0, truncated = false;
+  let emitted = 0, n = 0, truncated = false, lastSel = null;
   const clean = s => (s || "").trim().replace(/\s+/g, " ").slice(0, 80);
   const vis = el => {
     const r = el.getBoundingClientRect();
@@ -413,11 +415,11 @@ _SNAPSHOT_JS = r"""
   };
   const walk = (el, depth) => {
     if (depth > MAXD) { truncated = true; return null; }
-    if (emitted >= MAX) { truncated = true; return null; }
+    if (emitted >= MAX_NODES || n >= MAX_REFS) { truncated = true; return null; }
     emitted += 1;
     const kids = [];
     for (const c of el.children) {
-      if (emitted >= MAX) { truncated = true; break; }
+      if (emitted >= MAX_NODES || n >= MAX_REFS) { truncated = true; break; }
       const k = walk(c, depth + 1);
       if (k) kids.push(k);
     }
@@ -431,14 +433,24 @@ _SNAPSHOT_JS = r"""
       node.ref = ref;
       node.box = [Math.round(r.left), Math.round(r.top),
                   Math.round(r.width), Math.round(r.height)];
-      refs[ref] = {selector: cssPath(el), tag: el.tagName.toLowerCase(),
+      const sel = cssPath(el);
+      lastSel = sel;
+      refs[ref] = {selector: sel, tag: el.tagName.toLowerCase(),
                    text: name, rect: node.box};
+      if (n >= MAX_REFS) truncated = true;
     }
     if (!node.ref && !kids.length) return null;
     return node;
   };
-  const root = walk(document.body, 0);
+  let start = document.body;
+  if (ROOT_SEL) {
+    start = document.querySelector(ROOT_SEL);
+    if (!start) return {error: "root not found: " + ROOT_SEL};
+  }
+  const root = walk(start, 0);
   return {tree: root, refs: refs, count: n, truncated: truncated,
+          truncated_at: truncated ? {refs: n, nodes: emitted,
+                                     depth: MAXD, last_selector: lastSel} : null,
           url: location.href, title: document.title,
           dpr: window.devicePixelRatio,
           scroll: [window.scrollX, window.scrollY]};
@@ -446,7 +458,7 @@ _SNAPSHOT_JS = r"""
 """
 
 
-def snapshot(ws, max_nodes=150, timeout=15):
+def snapshot(ws, max_nodes=150, timeout=15, root=None):
     """页面结构快照（v0.6.0）：Playwright MCP 同思路——结构化树 + ref，
     不靠像素猜坐标。每个可见节点带 `[ref=eN] [box=x,y,w,h]`（视口 CSS
     像素）；refs 映射回**全链 nth-of-type 选择器**（正常 DOM 下唯一）。
@@ -461,8 +473,12 @@ def snapshot(ws, max_nodes=150, timeout=15):
     except (TypeError, ValueError):
         raise ValueError("max_nodes 需要整数：%r" % (max_nodes,))
     cap = max(1, min(500, cap))
-    js = _SNAPSHOT_JS % cap
+    if root is not None and not isinstance(root, str):
+        raise ValueError("root 需要 CSS 选择器字符串：%r" % (root,))
+    js = _SNAPSHOT_JS % (cap, json.dumps(root) if root else "null")
     out = _eval_raw(ws, js, timeout)
+    if out and out.get("error"):
+        raise RuntimeError("snapshot 失败：%s" % out["error"])
     if not out:
         raise RuntimeError("页面快照为空")
     lines = []
@@ -492,6 +508,7 @@ def snapshot(ws, max_nodes=150, timeout=15):
     return {"tree": tree, "refs": out.get("refs") or {},
             "count": int(out.get("count") or 0),
             "truncated": truncated,
+            "truncated_at": out.get("truncated_at"),
             "url": out.get("url"), "title": out.get("title"),
             "dpr": out.get("dpr"), "scroll": out.get("scroll")}
 

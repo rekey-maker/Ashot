@@ -186,3 +186,43 @@ def test_selector_annotation_hits_element(browser):
         assert abs(min(xs) - 120) <= 3 and abs(min(ys) - 80) <= 3, (min(xs), min(ys))
     finally:
         _close(browser, tid)
+
+
+def test_background_tab_shot_activates(browser):
+    """后台标签页截图：自动 bringToFront，收据亮 activated；DOM 变化后图会变。"""
+    wa, ta = _page(browser, "<body style='margin:0;background:#eee'>A</body>")
+    wb, tb = _page(browser, "<body style='margin:0'><h1 id='t'>B1</h1></body>")
+    try:
+        cdp.call(browser["ws"], "Target.activateTarget", {"targetId": ta}, 5)
+        time.sleep(0.3)
+        png1, info = cdp.shot(browser["port"], ws=wb, fullpage=False)
+        assert info.get("activated") is True, info
+        assert info.get("page_visibility") == "hidden", info
+        cdp.call(wb, "Runtime.evaluate",
+                 {"expression": "document.getElementById('t').textContent='B2'",
+                  "returnByValue": True}, 5)
+        time.sleep(0.3)
+        png2, _ = cdp.shot(browser["port"], ws=wb, fullpage=False)
+        assert png1 != png2, "后台页旧帧没被修复"
+    finally:
+        _close(browser, ta)
+        _close(browser, tb)
+
+
+def test_snapshot_root_scope(browser):
+    """root 限定子树 + 预算按 ref 计：卡片列表不再被外壳吃光。"""
+    cards = "".join("<a class='card' href='#%d'>card-%d</a>" % (i, i)
+                    for i in range(12))
+    html = ("<body style='margin:0'><div id='shell'><div><div><div>"
+            "<div id='results'>" + cards + "</div></div></div></div></div>"
+            "</body>")
+    ws, tid = _page(browser, html)
+    try:
+        rec = dom.snapshot(ws, max_nodes=20, root="#results")
+        assert rec["count"] >= 12, rec["count"]
+        assert not rec["truncated"], rec.get("truncated_at")
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError):
+            dom.snapshot(ws, root="#nope")
+    finally:
+        _close(browser, tid)
