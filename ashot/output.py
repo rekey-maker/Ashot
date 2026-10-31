@@ -277,6 +277,7 @@ def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
             "  if ($h -lt 1) { $h = 1 }"
             "  $bmp=New-Object System.Drawing.Bitmap($w,$h);"
             "  $g=[System.Drawing.Graphics]::FromImage($bmp);"
+            "  $g.Clear([System.Drawing.Color]::White);"
             "  $g.InterpolationMode="
             "[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;"
             "  $g.DrawImage($img,0,0,$w,$h);"
@@ -311,6 +312,18 @@ def preview_jpeg(png_bytes, width=PREVIEW_WIDTH_DEFAULT,
         info = {"width": int(w_s), "height": int(h_s),
                 "quality": int(q_s),
                 "bytes": int(len_s), "fit": int(len_s) <= max_bytes}
+        # v0.7.5（审计 P1-2）：JPEG 无 alpha——源图带 alpha 通道时预览
+        # 已合成到白底（PS Clear），收据如实声明。检测=PNG IHDR color
+        # type（4=灰+alpha，6=RGBA）——**结构性检查**（不逐像素扫描，
+        # 不判定「是否有实际透明像素」）；对 JPEG 源恒 False（JPEG 本
+        # 就无 alpha）。Ashot 自产 PNG 恒 RGBA，故本字段对自家产物恒
+        # True——语义=「预览渲染规则」，不是「有内容被丢」。
+        if png_bytes[:8] == b"\x89PNG\r\n\x1a\n" and len(png_bytes) > 25:
+            ctype = png_bytes[25]
+            info["preview_alpha_channel"] = ctype in (4, 6)
+        else:
+            info["preview_alpha_channel"] = False
+        info["preview_background"] = "white"
         # v0.6.0：把预览坐标换算回源图坐标（模型看图猜的坐标不再靠猜）
         if sz and sz[0] and info["width"]:
             info["src"] = [int(sz[0]), int(sz[1])]

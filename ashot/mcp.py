@@ -190,6 +190,8 @@ def _annotate(image, ops, out=None, preview=True, jpg=0, quality=85,
     `fill`=填充色（先填后描；arc=扇形；line/text 给 fill 报错）；颜色
     支持 `#RRGGBBAA` 半透明（GDI+ 与像素降级路都 source-over 混合），
     填充规则=非零环绕（GDI+ 缺省 Alternate 已显式改 Winding）。
+    **v0.7.5**：`stroke`=布尔（false=只填不描——无边柔和色块，不必再
+    用 color 同 fill 代替；须配合 fill；width 校验随之豁免）。
     **v0.6.0/0.6.1**：ops 可用 `selector` 或 `ref`（ref 来自
     `ashot_snapshot`）直接按元素定位，矩形族与 text 支持，`pad` 外扩；
     selector/ref 已含页面 dpr，**不要再传全局 dpr**（会二次乘，v0.6.1

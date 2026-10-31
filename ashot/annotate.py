@@ -612,7 +612,8 @@ def annotate_png(png_bytes, ops):
         # 与矢量路差 2px）；<=0 / 过大一律报错，别静默不画（审查实测
         # width=-3 时像素路零输出）
         width_f = float(op.get("width", DEFAULT_WIDTH))
-        if kind in STROKE_KINDS:
+        no_stroke = op.get("stroke") is False   # v0.7.5：只填不描
+        if kind in STROKE_KINDS and not no_stroke:
             if width_f <= 0:
                 raise ValueError("width 必须 > 0（%s）：%r"
                                  % (kind, op.get("width")))
@@ -664,12 +665,15 @@ def annotate_png(png_bytes, ops):
                     fp = ([(args[0] + args[2] / 2.0, args[1] + args[3] / 2.0)]
                           + list(pts))
                 cv.fill_polygon(fp, rgb, al)
-            for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-                seg = geometry.clip_segment(ax, ay, bx, by, cv.w - 1, cv.h - 1)
-                if seg is None:
-                    continue        # 整段在画布外：不跑 Bresenham（审查 P2-4）
-                cv.line(int(round(seg[0])), int(round(seg[1])),
-                        int(round(seg[2])), int(round(seg[3])), color, width)
+            if not no_stroke:   # v0.7.5：stroke:false 只填不描
+                for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                    seg = geometry.clip_segment(ax, ay, bx, by,
+                                                cv.w - 1, cv.h - 1)
+                    if seg is None:
+                        continue    # 整段在画布外：不跑 Bresenham（审查 P2-4）
+                    cv.line(int(round(seg[0])), int(round(seg[1])),
+                            int(round(seg[2])), int(round(seg[3])), color,
+                            width)
             continue
         n = _nums(op, "xywh" if kind in ("rect", "ellipse", "mosaic", "blur",
                                          "spotlight", "smarterase")
@@ -683,12 +687,14 @@ def annotate_png(png_bytes, ops):
                 cv.fill_polygon(
                     vector._rect_path(n[0], n[1], n[2], n[3],
                                       int(op.get("radius", 0))), rgb, al)
-            cv.rect(*n, color, width, radius=int(op.get("radius", 0)))
+            if not no_stroke:   # v0.7.5：stroke:false 只填不描
+                cv.rect(*n, color, width, radius=int(op.get("radius", 0)))
         elif kind == "ellipse":
             if op.get("fill"):
                 rgb, al = _color_a(op["fill"])
                 cv.fill_polygon(vector._ellipse_path(*n), rgb, al)
-            cv.ellipse(*n, color, width)
+            if not no_stroke:   # v0.7.5：stroke:false 只填不描
+                cv.ellipse(*n, color, width)
         elif kind == "arrow":
             cv.arrow(*n, color, width, style=str(op.get("style", "fat")))
         elif kind == "line":

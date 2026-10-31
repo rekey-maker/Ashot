@@ -68,6 +68,9 @@ GitHub `rekey-maker/Ashot`），**与 ALrec/daemon 无关**，离线可用；直
   是偶奇 Alternate，已显式改 Winding，与 SVG 缺省一致；凹/自交多边形
   矢量路与像素降级路结果一致）。半透明（仅 fill）source-over 两路一致；
   描边/文字仍只支持 #RRGGBB（像素降级路不做 alpha，8 位 color 会报错）。
+  **v0.7.5 `stroke:false`**：只填不描（无边柔和色块，不再需要 color 同
+  fill 代替；须配合 fill——无填充无描边的 op 会被拒；width 随之豁免；
+  stroke:true=显式描边，与缺省一致）。
   **渲染双后端（v0.1.7 矢量 / v0.1.8 收据）**：矢量形状走 GDI+
   （System.Drawing 抗锯齿，真矢量——边缘平滑无马赛克感，文字走微软
   雅黑）；GDI+ 失败自动降级纯像素画布（硬边）。收据 `backend` 只反映

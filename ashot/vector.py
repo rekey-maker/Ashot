@@ -30,9 +30,9 @@ _RECT_PAD_KINDS = ("rect", "ellipse", "mosaic", "blur", "spotlight",
 _ALLOWED_KEYS = {
     "kind", "x", "y", "w", "h", "x1", "y1", "x2", "y2",
     "x0", "y0", "c1x", "c1y", "c2x", "c2y", "points", "coords", "area",
-    "color", "width", "fill", "radius", "text", "size", "font", "bold",
-    "value", "n", "style", "dim", "block", "start", "sweep", "end",
-    "start_angle", "sweep_angle", "end_angle", "dpr",
+    "color", "width", "fill", "stroke", "radius", "text", "size", "font",
+    "bold", "value", "n", "style", "dim", "block", "start", "sweep",
+    "end", "start_angle", "sweep_angle", "end_angle", "dpr",
     "selector", "ref", "pad",
 }
 # v0.7.4 fill（色块填充）：这些闭合形状支持 "fill" 颜色；其余 kind 给了
@@ -94,6 +94,19 @@ def apply_pad(ops):
         if isinstance(col, str) and len(col.lstrip("#")) == 8:
             raise ValueError("半透明只支持 fill；描边/文字颜色请用 #RRGGBB：%r"
                              % (col,))
+        # v0.7.5（审计 P1-1）：stroke:false = 只填不描——不写 color 的
+        # fill 不再被迫带默认红边；半透明 fill 终于有无边柔和色块。
+        # 诚实规则：stroke:false 必须配合 fill（无填充无描边的 op 什么
+        # 都不会画，静默 no-op 违背如实亮牌纪律）；stroke 只收布尔。
+        if "stroke" in op:
+            if op["stroke"] not in (True, False):
+                raise ValueError("stroke 只收布尔 true/false：%r"
+                                 % (op["stroke"],))
+            if op["stroke"] is False and op.get("fill") in (None, "",
+                                                            False):
+                raise ValueError("stroke:false 需配合 fill——无填充无描边"
+                                 "的 op 不会画出任何东西（kind=%r）"
+                                 % op.get("kind"))
         unknown = set(op) - _ALLOWED_KEYS
         if unknown:
             raise ValueError("未知 op 字段 %s（kind=%r）——拼写检查，"
@@ -270,7 +283,8 @@ def compile_ops(ops):
         kind = op.get("kind")
         color = _hex(op.get("color"))
         width = float(op.get("width", DEFAULT_WIDTH))
-        if kind in STROKE_KINDS:
+        no_stroke = op.get("stroke") is False   # v0.7.5：只填不描
+        if kind in STROKE_KINDS and not no_stroke:
             if width <= 0:
                 raise ValueError("width 必须 > 0（%s）：%r"
                                  % (kind, op.get("width")))
@@ -293,17 +307,19 @@ def compile_ops(ops):
                 pts = [(x1, y1), (x2, y2)]
             if fill:
                 shapes.append(_fill(pts, fill, oi))   # 先填后描：描边压在色块上
-            sh = _stroke(pts, color, width)
-            sh["i"] = oi
-            shapes.append(sh)
+            if not no_stroke:
+                sh = _stroke(pts, color, width)
+                sh["i"] = oi
+                shapes.append(sh)
         elif kind == "curve":
             pts = geometry.pad_points(
                 geometry.bezier_points(*geometry.parse_curve(op)))
             if fill:
                 shapes.append(_fill(pts, fill, oi))   # 多边形语义自动闭合
-            sh = _stroke(pts, color, width)
-            sh["i"] = oi
-            shapes.append(sh)
+            if not no_stroke:
+                sh = _stroke(pts, color, width)
+                sh["i"] = oi
+                shapes.append(sh)
         elif kind == "arc":
             args = geometry.parse_arc(op)
             pts = geometry.pad_points(geometry.arc_points(*args))
@@ -312,16 +328,18 @@ def compile_ops(ops):
                 # 同语义：两条半径线夹出的扇区）
                 cx, cy = args[0] + args[2] / 2.0, args[1] + args[3] / 2.0
                 shapes.append(_fill([(cx, cy)] + pts, fill, oi))
-            sh = _stroke(pts, color, width)
-            sh["i"] = oi
-            shapes.append(sh)
+            if not no_stroke:
+                sh = _stroke(pts, color, width)
+                sh["i"] = oi
+                shapes.append(sh)
         elif kind == "polyline":
             pts = geometry.polyline_points(geometry.parse_polyline(op))
             if fill:
                 shapes.append(_fill(pts, fill, oi))
-            sh = _stroke(pts, color, width)
-            sh["i"] = oi
-            shapes.append(sh)
+            if not no_stroke:
+                sh = _stroke(pts, color, width)
+                sh["i"] = oi
+                shapes.append(sh)
         elif kind == "arrow":
             x1, y1, x2, y2 = _nums(op, ("x1", "y1", "x2", "y2"))
             if str(op.get("style", "fat")) == "line":
