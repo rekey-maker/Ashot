@@ -2,7 +2,7 @@
 
 零第三方依赖的 Windows 桌面截图 + 标注工具（Python 标准库 + 系统自带
 GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，矢量
-抗锯齿渲染，收据如实亮牌。当前版本 **v0.7.4**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
+抗锯齿渲染，收据如实亮牌。当前版本 **v0.7.5**，MCP 23 个工具、25 个 CLI 子命令，**MIT 开源**。
 
 > **画图定位精度（实测 2026-10-29）**：桌面 rect 与浏览器 selector/ref
 > 画框的坐标误差都是 **0px**；可见的 ±2px 是描边线宽的一半。详见文末
@@ -46,9 +46,10 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `compose` 一条命令走完「截屏/读图→裁→缩→标注→存盘」。引擎=系统
   .NET System.Drawing（与矢量渲染同款，**不装 PIL**）；越界夹到边界
   并写 `bounds_warn`，收据回显 `crop`/`crop_px`（box 写反一眼可见）
-- **色块填充 `fill`**（v0.7.4）：闭合形状 rect（含 radius 圆角）/
+- **色块填充 `fill`**（v0.7.4/0.7.5）：闭合形状 rect（含 radius 圆角）/
   ellipse/curve/polyline/arc 加 `"fill":"#RRGGBB"`（或 `#RRGGBBAA`
-  半透明）即填色——先填后描（描边压色块上）；弧的 fill=**扇形**
+  半透明）即填色——先填后描（描边压色块上）；配 `"stroke": false`
+  **只填不描**（无边柔和色块）；弧的 fill=**扇形**
   （圆心→弧→闭合回圆心）；填充规则=**非零环绕 Winding**（GDI+ 缺省
   是偶奇 Alternate，已显式改，凹/自交多边形矢量路与像素降级路一致）。
   实心箭头内部早已在用的填充引擎提为用户开关
@@ -173,7 +174,7 @@ GDI 句柄守恒（GetGuiResources 计数）、抗锯齿中间色分水岭、收
 （backend/pixel_ops/bounds_warn/degrade_reason/ver）、text 换行与越界
 告警、字库查询与缓存失效、preview 图片收据（缺省开）、show 展示与
 caption 转义、CDP 发现降级/多实例拒绝/坐标语义、MCP 坏帧韧性、
-retention 边界等；v0.4.0 另加 `tests/test_transform.py` 30 项（裁切逐像素、越界告警、dpr、先裁后缩、JPEG 魔数/体积、CLI/MCP 三面）；v0.7.4 另加 `tests/test_fill.py` 13 项（编译顺序、扇形首点、拒收、两路实心/半透明混合、凹多边形两路一致、bounds_warn、CLI 端到端）。
+retention 边界等；v0.4.0 另加 `tests/test_transform.py` 30 项（裁切逐像素、越界告警、dpr、先裁后缩、JPEG 魔数/体积、CLI/MCP 三面）；v0.7.4 另加 `tests/test_fill.py` 13 项（编译顺序、扇形首点、拒收、两路实心/半透明混合、凹多边形两路一致、bounds_warn、CLI 端到端）；v0.7.5 另加 `tests/test_stroke_alpha.py` 11 项（fill-only 两路无红边、全部 no_stroke 生成点守卫、布尔严格性、白底合成采样、alpha 通道亮牌）。
 
 > Windows 上若 `tmp_path` 报 PermissionError（pytest 以 `mode=0o700`
 > 建目录，本机 ACL 会拒读），加 `--basetemp=<工作区内新目录>` 即可；

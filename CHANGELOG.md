@@ -17,7 +17,7 @@
   `preview_background:"white"` + `preview_alpha_channel`（IHDR 结构性
   检查；不叫 alpha_lost——Ashot 自产 PNG 恒 RGBA，不谎称有内容被丢）
 ### 测试
-- 205→215：fill-only 两路无红边、全部 no_stroke 生成点守卫锁、
+- 205→216：fill-only 两路无红边、全部 no_stroke 生成点守卫锁、
   stroke:false 无 fill 拒收、布尔严格性、白底合成色采样、alpha 通道
   亮牌（子 agent 审计 P2-1/P2-2/P2-3 采纳收口）
 
