@@ -22,10 +22,8 @@ def _img(w=200, h=120, alpha=b"\xff"):
     return output.bgra_to_png(w, h, (b"\x30\x60\x90" + alpha) * (w * h))
 
 
-def _px(png, x, y):
-    _, _, px = annotate._decode_png(png)
-    i = (y * annotate._decode_png(png)[0] + x) * 4
-    return (px[i], px[i + 1], px[i + 2])
+# （审计 P3-4：原 _px 死辅助已删——红边断言改全图红像素扫描，
+#  见 test_stroke_false_pixel_no_red_edge；勿再引入逐点取样辅助）
 
 
 # ---------- P1-1 stroke:false ----------
@@ -39,8 +37,9 @@ def test_stroke_false_vector_no_stroke_shape():
 
 
 def test_stroke_false_pixel_no_red_edge():
-    """像素路 fill-only：色块内=填充色、紧贴块外的边框带=背景色
-    （旧版此处是默认红边）。"""
+    """像素路 fill-only：色块内=填充色、**全图无红色像素**（旧版默认
+    红边 width=3 带在 x=19..21——审计 P2-1 指出旧断言 (17,45) 打不中
+    描边带，mutant 存活；改全图无红，mutant 必红）。"""
     png = annotate.annotate_png(
         _img(), [{"kind": "rect", "x": 20, "y": 20, "w": 60, "h": 50,
                   "fill": "#00B140", "stroke": False}])
@@ -52,9 +51,9 @@ def test_stroke_false_pixel_no_red_edge():
 
     bg = (0x90, 0x60, 0x30)
     assert at(50, 45) == (0, 0xB1, 0x40), "块内非填充色：%r" % (at(50, 45),)
-    # 描边若存在会以路径为中心向两侧各 ~2px：块外 17,45 / 45,17 都会染红
-    assert at(17, 45) == bg and at(45, 17) == bg, \
-        "fill-only 仍有默认红边：%r %r" % (at(17, 45), at(45, 17))
+    red = sum(1 for i in range(0, len(px), 4)
+              if px[i] > 0xC0 and px[i + 1] < 0x40 and px[i + 2] < 0x40)
+    assert red == 0, "fill-only 出现红色描边像素：%d" % red
 
 
 def test_stroke_false_gdi_edge_clean():
@@ -107,12 +106,40 @@ def test_stroke_false_requires_fill():
         pass
 
 
+def test_stroke_false_all_generation_sites():
+    """审计 P2-2：全部 no_stroke 生成点回归锁——curve/arc/polyline
+    的 vector 侧与 pixel 侧、pixel ellipse、pixel width 豁免。"""
+    # vector 侧：curve/arc/polyline + stroke:false → 仅 fill 形状
+    for op in ({"kind": "curve", "points": [[0, 0], [20, 20], [40, 0],
+                                            [60, 0]],
+                "fill": "#00FF00", "stroke": False},
+               {"kind": "arc", "x": 0, "y": 0, "w": 40, "h": 40,
+                "start": 0, "sweep": 180, "fill": "#00FF00",
+                "stroke": False},
+               {"kind": "polyline", "points": [[0, 0], [20, 20], [40, 0]],
+                "fill": "#00FF00", "stroke": False}):
+        spec = vector.compile_ops([op])
+        kinds = [s["t"] for s in spec["shapes"]]
+        assert kinds == ["fill"], (op["kind"], kinds)
+    # 像素路：ellipse + width=0 + stroke:false 不报错且无红边
+    png = annotate.annotate_png(
+        _img(), [{"kind": "ellipse", "x": 20, "y": 20, "w": 60, "h": 50,
+                  "fill": "#00B140", "width": 0, "stroke": False}])
+    _, _, px = annotate._decode_png(png)
+    red = sum(1 for i in range(0, len(px), 4)
+              if px[i] > 0xC0 and px[i + 1] < 0x40 and px[i + 2] < 0x40)
+    assert red == 0, "像素 ellipse fill-only 出红：%d" % red
+
+
 def test_stroke_bool_only():
-    """stroke 只收布尔（字符串 "false" 是 LLM 手写 JSON 常见坑）。"""
+    """stroke 只收真布尔：字符串 "false"/整数 0/1 都拒（审计 P3-2——
+    apply_pad 的 in (True,False) 用 == 放行 0/1，compile_ops 的 is False
+    却不认，两处口径统一为严格 isinstance）。"""
     import pytest
-    with pytest.raises(ValueError):
-        vector.apply_pad([{"kind": "rect", "x": 1, "y": 1, "w": 4, "h": 4,
-                           "fill": "#00FF00", "stroke": "false"}])
+    for bad in ("false", 0, 1, None):
+        with pytest.raises(ValueError):
+            vector.apply_pad([{"kind": "rect", "x": 1, "y": 1, "w": 4,
+                               "h": 4, "fill": "#00FF00", "stroke": bad}])
 
 
 def test_stroke_false_width_zero_ok():
@@ -147,8 +174,8 @@ def test_preview_jpeg_white_composite():
     assert info["preview_alpha_channel"] is True
     assert info["preview_background"] == "white"
     # JPEG 无 alpha；半透明红 over 白 → R=255, G/B≈127（±2 容差）
-    tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "_tmp_alpha_check.jpg")
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), "_ashot_alpha_check.jpg")
     open(tmp, "wb").write(jpeg)
     try:
         ps = (

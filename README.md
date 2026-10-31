@@ -32,7 +32,8 @@ GDI+）。为 AI agent 设计：CLI 与 MCP 双入口，JSON ops 批量标注，
   `step`（同次调用自动递增编号）/ `number` / `spotlight`（聚光灯压暗）/
   `smarterase`（边缘均值色填充）
   - 每个 op 独立 `color`（#RRGGBB）与 `width`（粗细，**所有描边原语**都
-    支持，可给小数如 2.5；`<=0` 或 `>1000` 报错）。箭头/曲线的 width
+    支持，可给小数如 2.5；`<=0` 或 `>1000` 报错；fill 形状加
+    `"stroke": false` 只填不描时 width 豁免——v0.7.5）。箭头/曲线的 width
     语义：箭头=头部粗细基准，曲线=笔宽
   - 像素操作（mosaic/blur/spotlight/smarterase）走纯标准库像素画布
 - **输入/坐标便利**（v0.5.0）：`annotate`/`hash`/`diff`/`compose`

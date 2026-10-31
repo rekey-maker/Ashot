@@ -2,6 +2,25 @@
 
 所有显著变更记录于此。格式参考 Keep a Changelog，版本号遵循 SemVer。
 
+## [0.7.5] - 2026-10-31
+
+### stroke:false：只填不描（分析稿 P1-1；无边柔和色块）
+- fill 形状新增 `"stroke": false`——跳过描边形状生成，无边柔和色块
+  不再需要「color 同 fill 代替」（半透明 fill 配不出描边的死结解开）；
+  须配合 fill（无填充无描边的静默 no-op 入口拒绝，如实亮牌）；stroke
+  只收真布尔（"false"/0/1 都拒——审计 P3-2 两处口径统一）；width
+  校验随之豁免（width=0 硬报错的痛点消解）；矢量路四处 + 像素路三处
+  生成点同守卫
+### preview 白底合成（分析稿 P1-2；预览与实际 PNG 颜色不一致）
+- preview 缩图一律先白底再 DrawImage——透明底 #FF000080 从怪色
+  (254,0,0,255) 修正为 source-over (255,127,127)；收据新增
+  `preview_background:"white"` + `preview_alpha_channel`（IHDR 结构性
+  检查；不叫 alpha_lost——Ashot 自产 PNG 恒 RGBA，不谎称有内容被丢）
+### 测试
+- 205→215：fill-only 两路无红边、全部 no_stroke 生成点守卫锁、
+  stroke:false 无 fill 拒收、布尔严格性、白底合成色采样、alpha 通道
+  亮牌（子 agent 审计 P2-1/P2-2/P2-3 采纳收口）
+
 ## [0.7.4] - 2026-10-31
 
 ### fill：色块填充（用户侧开关；实心箭头此前已内部使用同款引擎）

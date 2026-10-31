@@ -99,7 +99,7 @@ def apply_pad(ops):
         # 诚实规则：stroke:false 必须配合 fill（无填充无描边的 op 什么
         # 都不会画，静默 no-op 违背如实亮牌纪律）；stroke 只收布尔。
         if "stroke" in op:
-            if op["stroke"] not in (True, False):
+            if not isinstance(op["stroke"], bool):   # 0/1/"false" 都拒（P3-2）
                 raise ValueError("stroke 只收布尔 true/false：%r"
                                  % (op["stroke"],))
             if op["stroke"] is False and op.get("fill") in (None, "",
